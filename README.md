@@ -1,8 +1,8 @@
 # CrunchyRagdoll
 
-Stop-motion / stepped animation for live humanoids and death ragdolls, ported from
-the [CrunchyRagdoll BepInEx mod for ULTRAKILL](https://thunderstore.io/) into a
-self-contained Unity asset.
+Stop-motion / stepped animation for live humanoids and death ragdolls in Unity.
+A self-contained asset implementing PCHIP-based motion quantization for
+animator-driven rigs and physics ragdolls.
 
 The idea: sample the underlying continuous motion (animator output or rigidbody
 trajectory), fit it with monotone cubic splines, and replay it in **stepped frames**
@@ -20,9 +20,8 @@ hand-animated stop-motion rather than smooth linear interpolation.
 - **`CrunchyRagdollProfile`** — a ScriptableObject holding all the tuning
   (τ values, hold-frame bounds, settle thresholds, bone-exclusion keywords,
   per-bone overrides). Drop one onto an authoring component and you're done.
-- **`CrunchyRagdollAuthoring`** — single MonoBehaviour entry point. Replaces the
-  Harmony patch in the original mod with a clean `GoLimp()` method you call from
-  your own death code.
+- **`CrunchyRagdollAuthoring`** — single MonoBehaviour entry point. Call `GoLimp()`
+  from your own death code to trigger the ragdoll stepper.
 
 ## Install
 
@@ -86,12 +85,36 @@ tracked rigidbody into a circular buffer, and the proxy applies stepped frames
 from that buffer instead of from a fitted spline — physics drives the motion,
 the stepper just visually quantizes it.
 
-## License / origin
+## License
 
-Algorithmic content and structure are direct ports from the CrunchyRagdoll
-ULTRAKILL mod, generalized to be game-agnostic. ULTRAKILL-specific Harmony patches
-and `Enemy.isZombie` hooks have been removed; the equivalent extension point is
-`CrunchyRagdollAuthoring.GoLimp()`.
+MIT — see below.
+
+The algorithm, architecture, and design of CrunchyRagdoll are original work by the
+author. C# implementation was produced with AI assistance.
+
+```
+MIT License
+
+Copyright (c) 2026 Yusuf Hosam
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## Where to look
 
