@@ -1,0 +1,14 @@
+{
+    "name": "CrunchyRagdoll.Runtime",
+    "rootNamespace": "CrunchyRagdoll.Runtime",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
