@@ -1,219 +1,242 @@
 using System.Collections.Generic;
-using CrunchyRagdoll.Runtime.Recording;
-using CrunchyRagdoll.Runtime.Utilities;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime
+namespace CrunchyRagdoll
 {
     /// <summary>
-    /// Crunchy ragdoll driver.
+    /// Crunchy ragdoll driver — now using the full PCHIP pipeline per bone.
     ///
-    /// The physics rig stays authoritative and invisible. On enable, we clone
-    /// the hierarchy, strip the clone down to renderers only, and drive that
-    /// visible proxy with stepped hold-frames sampled from the live rigidbodies.
+    /// Previously: TrajectoryRecorder captured raw snapshots, ShouldSnap() did a
+    /// naive Quaternion.Angle + Vector3.Distance check against a fixed min/max
+    /// hold-frame window. Arc-length, extrema detection, and PCHIP were never
+    /// involved in the ragdoll path at all.
     ///
-    /// This keeps Unity physics clean while still producing the low-framerate,
-    /// chunky motion the system is designed for. Direct transform writes into
-    /// non-kinematic Rigidbody bones cause CharacterJoint constraint error to
-    /// accumulate, which is why we never do that.
+    /// Now: one HoldFrameScheduler per tracked bone, same pipeline as
+    /// AnimationStepper — PCHIP fit over a rolling window, extrema via Brent's
+    /// method, arc-length candidate placement, deviation threshold. The only
+    /// difference from the animation path is that samples come from Rigidbody
+    /// world-rotation rather than Animator bone localRotation.
+    ///
+    /// Position is coupled to the rotation snap: when the scheduler emits a new
+    /// held rotation, the held position also snaps. An independent PositionTau
+    /// override catches cases where the body translates significantly without
+    /// rotating (sliding along a flat surface).
+    ///
+    /// Settle detection reads velocities directly from the live Rigidbodies —
+    /// no snapshot frame needed for that path.
     /// </summary>
-    [AddComponentMenu("CrunchyRagdoll/Ragdoll Stepper")]
-    public sealed class RagdollStepper : MonoBehaviour, ICrunchyComponent
+    public class RagdollStepper : MonoBehaviour
     {
-        [Tooltip("Optional profile asset. Field values are read live every FixedUpdate so " +
-                 "editing the profile takes effect immediately without restarting.")]
-        public CrunchyRagdollProfile Profile;
+        [Header("Crunch feel")]
+        public float Tau         = 12f;    // degrees of rotation before the proxy snaps
+        public float PositionTau = 0.08f;  // world units of translation before the proxy snaps
 
-        [Tooltip("Root of the ragdoll rig containing the Rigidbodies. " +
-                 "If null, uses the GameObject this component is on.")]
-        public Transform RagdollRoot;
-
-        [Header("Fallback (used when Profile is null)")]
-        public float Tau = 12f;
-        public float PositionTau = 0.08f;
-        public int MinimumHoldFrames = 2;
-        public int MaximumHoldFrames = 4;
-
-        [Header("Settle (fallback)")]
+        [Header("Physics settle")]
         public float SettleVelocityThreshold = 0.75f;
-        public float SettleAngularThreshold = 25f;
-        public float SettleTime = 0.35f;
-        public float WakeVelocityThreshold = 3.0f;
+        public float SettleAngularThreshold  = 25f;   // deg/s
+        public float SettleTime              = 0.35f;
+        public float WakeVelocityThreshold   = 3.0f;
 
-        [Header("Proxy (fallback)")]
-        public int SnapshotBufferSize = 120;
+        [Header("Proxy rig")]
         public bool HideSourceRenderers = true;
         public bool StripProxyComponents = true;
-        public bool ForceEnableProxyRenderers = true;
 
-        private Rigidbody[] _sourceBodies;
-        private Transform[] _visualBones;
-        private TrajectoryRecorder _recorder;
-        private RigidbodySnapshotFrame _heldFrame;
-        private GameObject _visualProxyRoot;
+        // One scheduler per tracked Rigidbody — drives rotation via the full
+        // PCHIP → extrema → arc-length → deviation-threshold pipeline.
+        private HoldFrameScheduler[] _schedulers;
+        private Vector3[]    _heldPositions;
+        private Quaternion[] _heldRotations;  // previous scheduler output, used to detect snaps
 
-        private int _anchorIndex;
-        private bool _initialized;
-        private bool _settled;
+        private Rigidbody[]  _sourceBodies;
+        private Transform[]  _visualBones;
+        private GameObject   _visualProxyRoot;
+
+        private int   _anchorIndex;
+        private bool  _initialized;
+        private bool  _settled;
         private float _settleTimer;
-        private int _framesSinceSnap;
         private float _startTime;
+
         private Renderer[] _sourceRenderers;
-        private Animator _sourceAnimator;
+        private Animator   _sourceAnimator;
+
+        // ------------------------------------------------------------------ lifecycle
 
         private void Start()
         {
-            _startTime = Time.fixedTime;
-            GameObject rigSource = RagdollRoot != null ? RagdollRoot.gameObject : gameObject;
+            _startTime     = Time.fixedTime;
+            _sourceAnimator = GetComponentInChildren<Animator>(true);
 
-            _sourceAnimator = rigSource.GetComponentInChildren<Animator>(true);
-
-            // Build the proxy FIRST. Instantiate copies component state, so
-            // anything we change on the source after this point won't leak into
-            // the clone.
-            var proxy = RagdollProxyBuilder.Build(
-                rigSource,
-                stripComponents: ResolveStripProxyComponents(),
-                forceEnableRenderers: ResolveForceEnableProxyRenderers());
-
-            _visualProxyRoot = proxy.Proxy;
-            _sourceBodies = proxy.SourceBodies;
-            _visualBones = proxy.VisualBones;
+            BuildVisualProxy();   // must be first — Instantiate copies component state
 
             if (_sourceAnimator != null)
                 _sourceAnimator.enabled = false;
 
-            if (ResolveHideSourceRenderers())
+            if (HideSourceRenderers)
             {
-                _sourceRenderers = rigSource.GetComponentsInChildren<Renderer>(true);
+                _sourceRenderers = GetComponentsInChildren<Renderer>(true);
                 for (int i = 0; i < _sourceRenderers.Length; i++)
-                {
                     if (_sourceRenderers[i] != null)
                         _sourceRenderers[i].enabled = false;
-                }
             }
 
+            CacheTrackedBodiesAndBones();
+
             if (_sourceBodies == null || _sourceBodies.Length == 0 ||
-                _visualBones == null || _visualBones.Length == 0)
+                _visualBones  == null || _visualBones.Length  == 0)
             {
-                Debug.LogWarning($"[CrunchyRagdoll/RagdollStepper] {gameObject.name} — " +
-                                 "no tracked ragdoll bodies found. Disabling.");
+                Plugin.Log.LogWarning($"[RagdollStepper] {gameObject.name} — no tracked ragdoll bodies found.");
                 enabled = false;
                 return;
             }
 
-            _anchorIndex = RagdollProxyBuilder.PickAnchorIndex(_sourceBodies);
-            _recorder = new TrajectoryRecorder(
-                Mathf.Max(8, ResolveSnapshotBufferSize()),
-                _sourceBodies.Length);
+            _anchorIndex = PickAnchorIndex(_sourceBodies);
+            InitSchedulers();
 
-            Debug.Log($"[CrunchyRagdoll/RagdollStepper] {gameObject.name} — " +
-                      $"{_sourceBodies.Length} tracked bones, crunchy visual proxy enabled");
+            Plugin.Log.LogInfo(
+                $"[RagdollStepper] {gameObject.name} — {_sourceBodies.Length} tracked bones, " +
+                $"PCHIP pipeline active (τ={Tau}°)");
         }
+
+        private void InitSchedulers()
+        {
+            int   n          = _sourceBodies.Length;
+            float tau        = Plugin.RagdollTau;
+            int   candidates = Mathf.Clamp(Plugin.GaussPoints, 1, 4);
+
+            _schedulers    = new HoldFrameScheduler[n];
+            _heldPositions = new Vector3[n];
+            _heldRotations = new Quaternion[n];
+
+            for (int i = 0; i < n; i++)
+            {
+                // bufferSize 30: ~0.6 s at 50 Hz FixedUpdate — enough history for
+                // PCHIP to fit a smooth curve over a ragdoll's recent trajectory.
+                _schedulers[i] = new HoldFrameScheduler(tau, candidates, bufferSize: 30);
+
+                if (_sourceBodies[i] != null)
+                {
+                    _heldPositions[i] = _sourceBodies[i].position;
+                    _heldRotations[i] = _sourceBodies[i].rotation;
+                    _schedulers[i].Reset(_sourceBodies[i].rotation);
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------ update
 
         private void FixedUpdate()
         {
-            if (Profile != null && !Profile.Global.Enabled) return;
             if (_sourceBodies == null || _sourceBodies.Length == 0 || _visualBones == null)
                 return;
 
-            // Prune bones destroyed or deactivated externally (e.g. dismemberment).
-            // Must run before Capture — a destroyed Rigidbody records default(snapshot)
-            // which has position (0,0,0). ApplyToTransforms would then snap that proxy
-            // bone to world origin, producing visible drift on dead-body hits.
             PruneDestroyedBodies();
             if (_sourceBodies.Length == 0) return;
 
-            RigidbodySnapshotFrame rawFrame = _recorder.Capture(_sourceBodies, Time.fixedTime);
+            float t      = Time.fixedTime;
+            float liveTau = Plugin.RagdollTau;
+            float posTau  = Plugin.RagdollPosTau;
 
             if (!_initialized)
             {
-                _heldFrame = rawFrame.Clone();
-                _framesSinceSnap = 0;
-                _settled = false;
-                _settleTimer = 0f;
+                for (int i = 0; i < _sourceBodies.Length; i++)
+                {
+                    if (_sourceBodies[i] == null) continue;
+                    _heldPositions[i] = _sourceBodies[i].position;
+                    _heldRotations[i] = _sourceBodies[i].rotation;
+                    _schedulers[i].Reset(_sourceBodies[i].rotation);
+                }
                 _initialized = true;
-                ApplyHeldFrame();
+                ApplyHeldPoses();
                 return;
             }
 
             if (_settled)
             {
-                if (AnchorWoke(rawFrame))
+                if (AnchorWoke())
                 {
-                    _settled = false;
-                    _settleTimer = 0f;
-                    _heldFrame.CopyFrom(rawFrame);
-                    _framesSinceSnap = 0;
-                    Debug.Log($"[CrunchyRagdoll/RagdollStepper] {gameObject.name} woke " +
-                              $"at t+{Time.fixedTime - _startTime:F2}s");
+                    _settled      = false;
+                    _settleTimer  = 0f;
+
+                    // Reseed schedulers from current physics state so the
+                    // PCHIP window doesn't try to fit across the settle gap.
+                    for (int i = 0; i < _sourceBodies.Length; i++)
+                    {
+                        if (_sourceBodies[i] == null) continue;
+                        _schedulers[i].Reset(_sourceBodies[i].rotation);
+                        _heldPositions[i] = _sourceBodies[i].position;
+                        _heldRotations[i] = _sourceBodies[i].rotation;
+                    }
+
+                    Plugin.Log.LogInfo(
+                        $"[RagdollStepper] {gameObject.name} woke at t+{t - _startTime:F2}s");
                 }
                 else
                 {
-                    ApplyHeldFrame();
+                    ApplyHeldPoses();
                     return;
                 }
             }
 
-            UpdateSettleState(rawFrame);
+            UpdateSettleState();
 
-            if (ShouldSnap(rawFrame))
+            // Run the PCHIP pipeline for every tracked bone.
+            for (int i = 0; i < _sourceBodies.Length; i++)
             {
-                _heldFrame.CopyFrom(rawFrame);
-                _framesSinceSnap = 0;
-            }
-            else
-            {
-                _framesSinceSnap++;
+                if (_sourceBodies[i] == null || _schedulers[i] == null) continue;
+
+                // Push live tau so config slider changes take effect immediately.
+                _schedulers[i].Tau = liveTau;
+
+                Quaternion prevHeld = _heldRotations[i];
+                Quaternion newHeld  = _schedulers[i].Update(t, _sourceBodies[i].rotation);
+                _heldRotations[i]   = newHeld;
+
+                // When the rotation scheduler snaps, also snap the position —
+                // they should move together. The angle check uses a tiny epsilon
+                // rather than exact equality to guard against float drift.
+                bool rotSnapped = Quaternion.Angle(prevHeld, newHeld) > 0.01f;
+
+                Vector3 currentPos = _sourceBodies[i].position;
+                if (rotSnapped || Vector3.Distance(_heldPositions[i], currentPos) >= posTau)
+                    _heldPositions[i] = currentPos;
             }
 
-            ApplyHeldFrame();
+            ApplyHeldPoses();
         }
 
         private void LateUpdate()
         {
-            // Keep the proxy visually locked even if the render frame lands after
-            // one or more FixedUpdates. The proxy is separate from the physics rig,
-            // so this is safe.
+            // Keep the proxy locked even if the render frame lands after FixedUpdate.
             if (_initialized)
-                ApplyHeldFrame();
+                ApplyHeldPoses();
         }
 
-        private void ApplyHeldFrame()
+        private void ApplyHeldPoses()
         {
-            if (_heldFrame == null || _visualBones == null) return;
-            _heldFrame.ApplyToTransforms(_visualBones);
+            if (_visualBones == null || _heldPositions == null || _heldRotations == null) return;
+
+            int count = Mathf.Min(_visualBones.Length, _heldPositions.Length);
+            for (int i = 0; i < count; i++)
+            {
+                if (_visualBones[i] == null) continue;
+                _visualBones[i].position = _heldPositions[i];
+                _visualBones[i].rotation = _heldRotations[i];
+            }
         }
 
-        private bool ShouldSnap(RigidbodySnapshotFrame rawFrame)
+        // ------------------------------------------------------------------ settle
+
+        private void UpdateSettleState()
         {
-            int minHold = ResolveMinHold();
-            int maxHold = ResolveMaxHold();
-            float rotTau = ResolveTau();
-            float posTau = ResolvePosTau();
-
-            if (_framesSinceSnap < minHold) return false;
-            if (_framesSinceSnap >= maxHold) return true;
-
-            RigidbodySnapshot heldAnchor = _heldFrame[_anchorIndex];
-            RigidbodySnapshot rawAnchor = rawFrame[_anchorIndex];
-
-            float positionDelta = Vector3.Distance(heldAnchor.Position, rawAnchor.Position);
-            float rotationDelta = Quaternion.Angle(heldAnchor.Rotation, rawAnchor.Rotation);
-
-            return positionDelta >= posTau || rotationDelta >= rotTau;
-        }
-
-        private void UpdateSettleState(RigidbodySnapshotFrame rawFrame)
-        {
-            if (AnchorStill(rawFrame))
+            if (AllBonesStill())
             {
                 _settleTimer += Time.fixedDeltaTime;
-                if (_settleTimer >= ResolveSettleTime())
+                if (_settleTimer >= SettleTime)
                 {
                     _settled = true;
-                    Debug.Log($"[CrunchyRagdoll/RagdollStepper] {gameObject.name} settled " +
-                              $"at t+{Time.fixedTime - _startTime:F2}s");
+                    Plugin.Log.LogInfo(
+                        $"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
                 }
             }
             else
@@ -222,35 +245,99 @@ namespace CrunchyRagdoll.Runtime
             }
         }
 
-        private bool AnchorStill(RigidbodySnapshotFrame rawFrame)
+        private bool AllBonesStill()
         {
-            float vTh = ResolveSettleVel();
-            float aTh = ResolveSettleAng();
-            // Require ALL tracked bones below threshold before settling.
-            // Anchor-only would freeze the proxy with limbs still flailing.
             for (int i = 0; i < _sourceBodies.Length; i++)
             {
-                RigidbodySnapshot snap = rawFrame[i];
-                if (snap.Velocity.magnitude > vTh ||
-                    snap.AngularVelocity.magnitude * Mathf.Rad2Deg > aTh)
+                Rigidbody rb = _sourceBodies[i];
+                if (rb == null) continue;
+                if (rb.velocity.magnitude          > SettleVelocityThreshold ||
+                    rb.angularVelocity.magnitude * Mathf.Rad2Deg > SettleAngularThreshold)
                     return false;
             }
             return true;
         }
 
-        private bool AnchorWoke(RigidbodySnapshotFrame rawFrame)
+        private bool AnchorWoke()
         {
-            RigidbodySnapshot snap = rawFrame[_anchorIndex];
-            float wake = ResolveWakeVel();
-            return snap.Velocity.magnitude >= wake ||
-                   snap.AngularVelocity.magnitude * Mathf.Rad2Deg >= (wake * 6f);
+            if (_anchorIndex >= _sourceBodies.Length) return false;
+            Rigidbody rb = _sourceBodies[_anchorIndex];
+            if (rb == null) return false;
+            return rb.velocity.magnitude          >= WakeVelocityThreshold ||
+                   rb.angularVelocity.magnitude * Mathf.Rad2Deg >= WakeVelocityThreshold * 6f;
         }
 
+        // ------------------------------------------------------------------ proxy build
+
+        private void BuildVisualProxy()
+        {
+            GameObject clone = Instantiate(gameObject, transform.position, transform.rotation, null);
+            clone.name = gameObject.name + " [CrunchProxy]";
+            clone.SetActive(false);
+
+            // Kill our own components before SetActive(true) — DestroyImmediate is safe
+            // on inactive objects and prevents the clone spawning its own proxy.
+            foreach (var c in clone.GetComponentsInChildren<RagdollStepper>(true))
+                if (c != null) DestroyImmediate(c);
+            foreach (var c in clone.GetComponentsInChildren<RagdollLogger>(true))
+                if (c != null) DestroyImmediate(c);
+            foreach (var c in clone.GetComponentsInChildren<AnimationStepper>(true))
+                if (c != null) DestroyImmediate(c);
+
+            if (StripProxyComponents)
+                StripToRenderersOnly(clone);
+
+            clone.SetActive(true);
+
+            foreach (var r in clone.GetComponentsInChildren<Renderer>(true))
+            {
+                r.enabled = true;
+                if (r is SkinnedMeshRenderer smr)
+                    smr.updateWhenOffscreen = true;
+            }
+
+            _visualProxyRoot = clone;
+        }
+
+        private void CacheTrackedBodiesAndBones()
+        {
+            Rigidbody[] allBodies    = GetComponentsInChildren<Rigidbody>(true);
+            Transform   proxyRoot    = _visualProxyRoot.transform;
+            Transform[] proxyTransforms = _visualProxyRoot.GetComponentsInChildren<Transform>(true);
+
+            var proxyLookup = new Dictionary<string, Transform>(proxyTransforms.Length);
+            foreach (Transform t in proxyTransforms)
+            {
+                if (t == null) continue;
+                string path = GetPath(proxyRoot, t);
+                proxyLookup[path] = t;
+            }
+
+            var sourceList = new List<Rigidbody>(allBodies.Length);
+            var visualList = new List<Transform>(allBodies.Length);
+
+            foreach (Rigidbody rb in allBodies)
+            {
+                if (rb == null) continue;
+                string path = GetPath(transform, rb.transform);
+                if (!proxyLookup.TryGetValue(path, out Transform proxyBone) || proxyBone == null)
+                {
+                    Plugin.Log.LogWarning($"[RagdollStepper] Missing proxy match for '{path}'");
+                    continue;
+                }
+                sourceList.Add(rb);
+                visualList.Add(proxyBone);
+            }
+
+            _sourceBodies = sourceList.ToArray();
+            _visualBones  = visualList.ToArray();
+        }
+
+        // ------------------------------------------------------------------ prune
+
         /// <summary>
-        /// Removes bones that have been destroyed or deactivated externally
-        /// (dismemberment, decapitation, pooling). Detects this before Capture
-        /// so we never record a default snapshot (position 0,0,0) and snap a
-        /// proxy bone to world origin.
+        /// Removes bones destroyed/deactivated by ULTRAKILL's dismemberment system.
+        /// Also prunes the parallel scheduler, heldPosition, and heldRotation arrays.
         /// </summary>
         private void PruneDestroyedBodies()
         {
@@ -258,25 +345,22 @@ namespace CrunchyRagdoll.Runtime
             for (int i = 0; i < _sourceBodies.Length; i++)
             {
                 if (_sourceBodies[i] == null || !_sourceBodies[i].gameObject.activeInHierarchy)
-                {
-                    dirty = true;
-                    break;
-                }
+                { dirty = true; break; }
             }
             if (!dirty) return;
 
-            var newBodies = new List<Rigidbody>(_sourceBodies.Length);
-            var newBones = new List<Transform>(_visualBones.Length);
+            var newBodies   = new List<Rigidbody>(_sourceBodies.Length);
+            var newBones    = new List<Transform>(_visualBones.Length);
+            var newSched    = new List<HoldFrameScheduler>(_schedulers.Length);
+            var newHeldPos  = new List<Vector3>(_heldPositions.Length);
+            var newHeldRot  = new List<Quaternion>(_heldRotations.Length);
 
             for (int i = 0; i < _sourceBodies.Length; i++)
             {
-                bool sourceGone = _sourceBodies[i] == null ||
-                                  !_sourceBodies[i].gameObject.activeInHierarchy;
-
-                if (sourceGone)
+                bool gone = _sourceBodies[i] == null ||
+                            !_sourceBodies[i].gameObject.activeInHierarchy;
+                if (gone)
                 {
-                    // Hide the matching proxy bone — don't destroy it, sibling
-                    // bones are still attached to it as part of the hierarchy.
                     if (_visualBones[i] != null)
                         _visualBones[i].gameObject.SetActive(false);
                 }
@@ -284,83 +368,91 @@ namespace CrunchyRagdoll.Runtime
                 {
                     newBodies.Add(_sourceBodies[i]);
                     newBones.Add(_visualBones[i]);
+                    newSched.Add(_schedulers[i]);
+                    newHeldPos.Add(_heldPositions[i]);
+                    newHeldRot.Add(_heldRotations[i]);
                 }
             }
 
-            int removedCount = _sourceBodies.Length - newBodies.Count;
-            _sourceBodies = newBodies.ToArray();
-            _visualBones = newBones.ToArray();
+            int removed = _sourceBodies.Length - newBodies.Count;
+            _sourceBodies  = newBodies.ToArray();
+            _visualBones   = newBones.ToArray();
+            _schedulers    = newSched.ToArray();
+            _heldPositions = newHeldPos.ToArray();
+            _heldRotations = newHeldRot.ToArray();
 
-            Debug.Log($"[CrunchyRagdoll/RagdollStepper] {gameObject.name} pruned " +
-                      $"{removedCount} destroyed bone(s), {_sourceBodies.Length} remaining");
+            Plugin.Log.LogInfo(
+                $"[RagdollStepper] {gameObject.name} pruned {removed} bone(s), " +
+                $"{_sourceBodies.Length} remaining");
 
             if (_sourceBodies.Length == 0) return;
 
-            _anchorIndex = RagdollProxyBuilder.PickAnchorIndex(_sourceBodies);
-            _recorder = new TrajectoryRecorder(
-                Mathf.Max(8, ResolveSnapshotBufferSize()),
-                _sourceBodies.Length);
+            _anchorIndex = PickAnchorIndex(_sourceBodies);
 
-            // Re-seed _heldFrame on the next Capture rather than CopyFrom a
-            // frame with the old (larger) body count.
-            _heldFrame = null;
+            // Reinitialize so the next FixedUpdate seeds the schedulers cleanly
+            // rather than continuing from stale window state.
             _initialized = false;
         }
 
-        private void OnDestroy()
+        // ------------------------------------------------------------------ helpers
+
+        private static string GetPath(Transform root, Transform target)
         {
-            CleanupProxy();
+            if (root == null || target == null) return string.Empty;
+            if (root == target) return string.Empty;
+
+            var stack = new Stack<string>(8);
+            Transform current = target;
+            while (current != null && current != root)
+            {
+                stack.Push(current.name);
+                current = current.parent;
+            }
+            return current == null ? string.Empty : string.Join("/", stack.ToArray());
         }
 
+        private static void StripToRenderersOnly(GameObject root)
+        {
+            foreach (var j in root.GetComponentsInChildren<Joint>(true))
+                if (j != null) Destroy(j);
+            foreach (var rb in root.GetComponentsInChildren<Rigidbody>(true))
+                if (rb != null) Destroy(rb);
+            foreach (var c in root.GetComponentsInChildren<Collider>(true))
+                if (c != null) Destroy(c);
+            foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
+                if (mb != null) DestroyImmediate(mb);
+            foreach (var a in root.GetComponentsInChildren<Animator>(true))
+                if (a != null) DestroyImmediate(a);
+        }
+
+        private static int PickAnchorIndex(Rigidbody[] bodies)
+        {
+            int best = 0;
+            float bestMass = bodies[0] != null ? bodies[0].mass : float.MinValue;
+            for (int i = 1; i < bodies.Length; i++)
+            {
+                if (bodies[i] != null && bodies[i].mass > bestMass)
+                { bestMass = bodies[i].mass; best = i; }
+            }
+            return best;
+        }
+
+        // ------------------------------------------------------------------ cleanup
+
+        private void OnDestroy()  => CleanupProxy();
         private void OnDisable()
         {
-            // When the source is just deactivated (pooling, hit reactions), the
-            // FixedUpdate/LateUpdate won't run while this component is disabled,
-            // and the proxy freezes at its last pose. That is the desired behaviour
-            // — the proxy outlives the source.
-            //
-            // Restore source renderers in case the source gets re-enabled for reuse.
             if (_sourceRenderers != null)
-            {
-                for (int i = 0; i < _sourceRenderers.Length; i++)
-                {
-                    if (_sourceRenderers[i] != null)
-                        _sourceRenderers[i].enabled = true;
-                }
-            }
+                foreach (var r in _sourceRenderers)
+                    if (r != null) r.enabled = true;
         }
 
         private void CleanupProxy()
         {
-            if (_visualProxyRoot != null)
-            {
-                Destroy(_visualProxyRoot);
-                _visualProxyRoot = null;
-            }
-
+            if (_visualProxyRoot != null) { Destroy(_visualProxyRoot); _visualProxyRoot = null; }
             if (_sourceRenderers != null)
-            {
-                for (int i = 0; i < _sourceRenderers.Length; i++)
-                {
-                    if (_sourceRenderers[i] != null)
-                        _sourceRenderers[i].enabled = true;
-                }
-            }
+                foreach (var r in _sourceRenderers)
+                    if (r != null) r.enabled = true;
         }
-
-        // -------------- profile-or-fallback resolvers --------------
-
-        private float ResolveTau() => Profile != null ? Profile.DeathRagdoll.RagdollTau : Tau;
-        private float ResolvePosTau() => Profile != null ? Profile.DeathRagdoll.RagdollPosTau : PositionTau;
-        private int ResolveMinHold() => Profile != null ? Profile.DeathRagdoll.MinHoldFrames : MinimumHoldFrames;
-        private int ResolveMaxHold() => Profile != null ? Profile.DeathRagdoll.MaxHoldFrames : MaximumHoldFrames;
-        private float ResolveSettleVel() => Profile != null ? Profile.Settling.SettleVelocityThreshold : SettleVelocityThreshold;
-        private float ResolveSettleAng() => Profile != null ? Profile.Settling.SettleAngularThreshold : SettleAngularThreshold;
-        private float ResolveSettleTime() => Profile != null ? Profile.Settling.SettleTime : SettleTime;
-        private float ResolveWakeVel() => Profile != null ? Profile.Settling.WakeVelocityThreshold : WakeVelocityThreshold;
-        private int ResolveSnapshotBufferSize() => Profile != null ? Profile.Proxy.SnapshotBufferSize : SnapshotBufferSize;
-        private bool ResolveHideSourceRenderers() => Profile != null ? Profile.Proxy.HideSourceRenderers : HideSourceRenderers;
-        private bool ResolveStripProxyComponents() => Profile != null ? Profile.Proxy.StripProxyComponents : StripProxyComponents;
-        private bool ResolveForceEnableProxyRenderers() => Profile != null ? Profile.Proxy.ForceEnableProxyRenderers : ForceEnableProxyRenderers;
     }
 }
