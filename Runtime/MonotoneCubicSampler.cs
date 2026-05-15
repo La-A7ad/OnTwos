@@ -34,8 +34,12 @@ namespace OnTwos.Runtime.Math
         // Arc-length LUT: parallel arrays, _lutTimes[i] ↔ _lutCumAngles[i].
         // _lutCumAngles is cumulative Quaternion.Angle from tMin, monotone increasing.
         // Built once per PCHIP rebuild. ArcLengthCandidates() interpolates into it.
-        private float[] _lutTimes;
-        private float[] _lutCumAngles;
+        // Both arrays are allocated once in the constructor and reused on every rebuild
+        // to avoid per-frame GC. _lutValid gates queries against partially-initialised
+        // state (e.g. when there aren't yet enough samples for a meaningful fit).
+        private readonly float[] _lutTimes;
+        private readonly float[] _lutCumAngles;
+        private bool _lutValid;
         private const int LutSize = 80; // 80 points across the window — ~1ms resolution at 60Hz
 
         public int Count { get; private set; }
@@ -49,6 +53,11 @@ namespace OnTwos.Runtime.Math
             _capacity = capacity;
             _times = new float[capacity];
             _rots = new Quaternion[capacity];
+
+            // Pre-allocated once — reused on every BuildArcLengthLut to avoid GC.
+            _lutTimes     = new float[LutSize];
+            _lutCumAngles = new float[LutSize];
+            _lutValid     = false;
         }
 
         /// <summary>
@@ -113,7 +122,7 @@ namespace OnTwos.Runtime.Math
         /// </summary>
         public float[] ArcLengthCandidates(float a, float b, int n)
         {
-            if (_lutTimes == null || n <= 0)
+            if (!_lutValid || n <= 0)
                 return Array.Empty<float>();
 
             float angA = LutLerp(_lutTimes, _lutCumAngles, a);
@@ -159,7 +168,7 @@ namespace OnTwos.Runtime.Math
             }
 
             (xs, qs) = Deduplicate(xs, qs);
-            if (xs.Length < 2) { _px = null; _lutTimes = null; _dirty = false; return; }
+            if (xs.Length < 2) { _px = null; _lutValid = false; _dirty = false; return; }
 
             QuaternionSignNorm.Normalise(qs);
 
@@ -186,14 +195,12 @@ namespace OnTwos.Runtime.Math
         // Build the arc-length LUT immediately after PCHIP fits are ready.
         // Samples the quaternion curve at LutSize evenly-spaced times and
         // accumulates Quaternion.Angle between consecutive samples.
+        // Writes into the pre-allocated _lutTimes / _lutCumAngles arrays.
         private void BuildArcLengthLut()
         {
             float tMin = _px.TMin;
             float tMax = _px.TMax;
             float dt = (tMax - tMin) / (LutSize - 1);
-
-            _lutTimes = new float[LutSize];
-            _lutCumAngles = new float[LutSize];
 
             Quaternion prev = EvaluatePchip(tMin);
             _lutTimes[0] = tMin;
@@ -207,6 +214,8 @@ namespace OnTwos.Runtime.Math
                 _lutCumAngles[i] = _lutCumAngles[i - 1] + Quaternion.Angle(prev, curr);
                 prev = curr;
             }
+
+            _lutValid = true;
         }
 
         // Evaluate the four PCHIP components directly (no dirty check — only called

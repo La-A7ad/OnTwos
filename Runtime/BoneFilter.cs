@@ -1,34 +1,41 @@
 namespace OnTwos.Runtime.Utilities
 {
+    using UnityEngine;
+
     /// <summary>
     /// Tests whether a bone should be excluded from stepping based on its name.
     ///
-    /// Stepped feet and toes clip into the ground while the root moves smoothly;
-    /// stepped fingers can cause weapon attachments to flicker. Excluding by
-    /// keyword keeps those bones at their animator-driven rotation while the
-    /// rest of the rig gets the stylized look.
+    /// Some bones are better left at their full-resolution animator pose rather
+    /// than being stepped — for example, end-effectors that clip geometry when
+    /// held, IK targets that must track a target continuously, or attach points
+    /// that need to stay in sync with game logic. Use <see cref="OnTwosProfile"/>
+    /// <c>ExcludeKeywords</c> and <c>BoneOverrides</c> to specify these for your rig.
     /// </summary>
     public static class BoneFilter
-{
-    public static bool IsExcluded(Transform bone, Transform[] excludeBones, string[] excludeKeywords)
     {
-        // Direct reference check first — unambiguous
-        if (excludeBones != null)
-            for (int i = 0; i < excludeBones.Length; i++)
-                if (excludeBones[i] == bone) return true;
-
-        // Keyword fallback — useful for bulk exclusion by naming convention
-        if (string.IsNullOrEmpty(bone.name)) return false;
-        if (excludeKeywords == null || excludeKeywords.Length == 0) return false;
-
-        string lower = bone.name.ToLowerInvariant();
-        for (int i = 0; i < excludeKeywords.Length; i++)
+        /// <summary>
+        /// Returns true if <paramref name="bone"/> should be excluded from stepping.
+        /// Checks direct references first, then falls back to keyword matching.
+        /// </summary>
+        public static bool IsExcluded(Transform bone, Transform[] excludeBones, string[] excludeKeywords)
         {
-            string kw = excludeKeywords[i];
-            if (!string.IsNullOrEmpty(kw) && lower.Contains(kw.ToLowerInvariant()))
-                return true;
+            // Direct reference check — unambiguous
+            if (excludeBones != null)
+                for (int i = 0; i < excludeBones.Length; i++)
+                    if (excludeBones[i] == bone) return true;
+
+            // Keyword match — useful for bulk exclusion by naming convention
+            if (string.IsNullOrEmpty(bone.name)) return false;
+            if (excludeKeywords == null || excludeKeywords.Length == 0) return false;
+
+            string lower = bone.name.ToLowerInvariant();
+            for (int i = 0; i < excludeKeywords.Length; i++)
+            {
+                string kw = excludeKeywords[i];
+                if (!string.IsNullOrEmpty(kw) && lower.Contains(kw.ToLowerInvariant()))
+                    return true;
+            }
+            return false;
         }
-        return false;
     }
-}
 }

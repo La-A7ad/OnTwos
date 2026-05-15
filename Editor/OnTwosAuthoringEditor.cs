@@ -1,5 +1,4 @@
 using OnTwos.Runtime;
-using OnTwos.Runtime.Utilities;
 using UnityEditor;
 using UnityEngine;
 
@@ -18,10 +17,11 @@ namespace OnTwos.Editor
             serializedObject.Update();
             var authoring = (OnTwosAuthoring)target;
 
-            EditorGUILayout.LabelField("CrunchyRagdoll Authoring", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("OnTwos Authoring", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Attach to the root of an enemy/character prefab. AnimationStepper is added " +
-                "on Awake. Call GoLimp() from your death logic to swap to the ragdoll path.",
+                "Attach to the root of any rig you want stepped. AnimationStepper is added " +
+                "on Awake. Call ActivateRagdoll() at runtime (or use the button below) to swap " +
+                "to the physics-driven path; Deactivate() reverses the transition.",
                 MessageType.None);
 
             // -- Bindings
@@ -32,7 +32,7 @@ namespace OnTwos.Editor
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Profile"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("AnimatorRoot"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("BoneRoot"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("RagdollRoot"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("PhysicsRoot"));
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();
@@ -51,17 +51,17 @@ namespace OnTwos.Editor
                 {
                     if (GUILayout.Button("Try Auto-Bind Now"))
                     {
-                        Undo.RecordObject(authoring, "CrunchyRagdoll Auto-Bind");
+                        Undo.RecordObject(authoring, "OnTwos Auto-Bind");
                         authoring.AutoResolveBindings();
                         EditorUtility.SetDirty(authoring);
                     }
 
                     if (GUILayout.Button("Clear Bindings"))
                     {
-                        Undo.RecordObject(authoring, "CrunchyRagdoll Clear Bindings");
+                        Undo.RecordObject(authoring, "OnTwos Clear Bindings");
                         authoring.AnimatorRoot = null;
                         authoring.BoneRoot = null;
-                        authoring.RagdollRoot = null;
+                        authoring.PhysicsRoot = null;
                         EditorUtility.SetDirty(authoring);
                     }
                 }
@@ -75,16 +75,16 @@ namespace OnTwos.Editor
             {
                 EditorGUI.indentLevel++;
 
-                Transform boneRoot = authoring.BoneRoot != null ? authoring.BoneRoot : authoring.transform;
-                Transform ragdollRoot = authoring.RagdollRoot != null ? authoring.RagdollRoot : authoring.transform;
-                int boneCount = boneRoot.GetComponentsInChildren<Transform>(true).Length;
-                int rigidbodyCount = ragdollRoot.GetComponentsInChildren<Rigidbody>(true).Length;
+                Transform boneRoot    = authoring.BoneRoot    != null ? authoring.BoneRoot    : authoring.transform;
+                Transform physicsRoot = authoring.PhysicsRoot != null ? authoring.PhysicsRoot : authoring.transform;
+                int boneCount      = boneRoot.GetComponentsInChildren<Transform>(true).Length;
+                int rigidbodyCount = physicsRoot.GetComponentsInChildren<Rigidbody>(true).Length;
 
                 EditorGUILayout.LabelField($"Transforms under bone root: {boneCount}");
-                EditorGUILayout.LabelField($"Rigidbodies under ragdoll root: {rigidbodyCount}");
+                EditorGUILayout.LabelField($"Rigidbodies under physics root: {rigidbodyCount}");
 
                 if (rigidbodyCount == 0 && authoring.AutoCreateProxy)
-                    EditorGUILayout.HelpBox("AutoCreateProxy is on but no Rigidbodies exist under the ragdoll root. The proxy will be empty.", MessageType.Warning);
+                    EditorGUILayout.HelpBox("AutoCreateProxy is on but no Rigidbodies exist under the physics root. The proxy will be empty.", MessageType.Warning);
 
                 EditorGUI.indentLevel--;
             }
@@ -101,8 +101,8 @@ namespace OnTwos.Editor
                 else
                     EditorGUILayout.HelpBox(issue, MessageType.Warning);
 
-                bool hasRagdoll = OnTwosAutoBinder.HasRagdoll(authoring.RagdollRoot ?? authoring.transform);
-                EditorGUILayout.LabelField("Detected ragdoll joints:", hasRagdoll ? "Yes" : "No");
+                bool hasPhysics = OnTwosAutoBinder.HasPhysicsBodies(authoring.PhysicsRoot ?? authoring.transform);
+                EditorGUILayout.LabelField("Detected Rigidbodies under physics root:", hasPhysics ? "Yes" : "No");
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();
@@ -114,8 +114,15 @@ namespace OnTwos.Editor
                 EditorGUILayout.LabelField("Runtime Actions", EditorStyles.boldLabel);
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (GUILayout.Button("GoLimp() Now"))
-                        authoring.GoLimp();
+                    GUI.enabled = !authoring.IsRagdollActive;
+                    if (GUILayout.Button("Activate Ragdoll"))
+                        authoring.ActivateRagdoll();
+
+                    GUI.enabled = authoring.IsRagdollActive;
+                    if (GUILayout.Button("Deactivate"))
+                        authoring.Deactivate();
+
+                    GUI.enabled = true;
                 }
             }
 

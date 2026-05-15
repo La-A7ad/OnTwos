@@ -19,7 +19,7 @@ namespace OnTwos.Editor
             var stepper = (RagdollStepper)target;
 
             EditorGUILayout.PropertyField(serializedObject.FindProperty("Profile"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("RagdollRoot"));
+            EditorGUILayout.PropertyField(serializedObject.FindProperty("PhysicsRoot"));
 
             EditorGUILayout.Space(4);
             if (stepper.Profile != null)
@@ -34,8 +34,9 @@ namespace OnTwos.Editor
                 EditorGUI.indentLevel++;
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Tau"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("PositionTau"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("MinimumHoldFrames"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("MaximumHoldFrames"));
+                EditorGUILayout.HelpBox(
+                    "MinHoldFrames and MaxHoldFrames are profile-only — edit them on the assigned OnTwosProfile under the Ragdoll foldout.",
+                    MessageType.None);
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();
@@ -44,7 +45,9 @@ namespace OnTwos.Editor
             if (_foldBuffer)
             {
                 EditorGUI.indentLevel++;
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("SnapshotBufferSize"));
+                EditorGUILayout.HelpBox(
+                    "SnapshotBufferSize is profile-only — edit it on the assigned OnTwosProfile under the Proxy foldout.",
+                    MessageType.None);
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();
@@ -67,7 +70,7 @@ namespace OnTwos.Editor
                 EditorGUI.indentLevel++;
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("HideSourceRenderers"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("StripProxyComponents"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("ForceEnableProxyRenderers"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("EnableVisibilityCulling"));
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();

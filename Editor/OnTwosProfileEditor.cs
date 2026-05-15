@@ -7,25 +7,24 @@ namespace OnTwos.Editor
     [CustomEditor(typeof(OnTwosProfile))]
     public sealed class OnTwosProfileEditor : UnityEditor.Editor
     {
-        // Foldout names per architecture spec.
         private static class K
         {
-            public const string Global = "Global";
+            public const string Global        = "Global";
             public const string LiveAnimation = "Live Animation";
-            public const string DeathRagdoll = "Death Ragdoll";
-            public const string Settling = "Settling";
-            public const string Proxy = "Proxy Rig";
-            public const string BoneRules = "Bone Rules";
-            public const string Diagnostics = "Diagnostics Preview";
+            public const string Ragdoll       = "Ragdoll";
+            public const string Settling      = "Settling";
+            public const string Proxy         = "Proxy Rig";
+            public const string BoneRules     = "Bone Rules";
+            public const string Diagnostics   = "Diagnostics Preview";
         }
 
-        private bool _foldGlobal = true;
-        private bool _foldLive = true;
-        private bool _foldDeath = true;
-        private bool _foldSettling = false;
-        private bool _foldProxy = false;
-        private bool _foldBones = false;
-        private bool _foldDiag = false;
+        private bool _foldGlobal    = true;
+        private bool _foldLive      = true;
+        private bool _foldRagdoll   = true;
+        private bool _foldSettling  = false;
+        private bool _foldProxy     = false;
+        private bool _foldBones     = false;
+        private bool _foldDiag      = false;
 
         public override void OnInspectorGUI()
         {
@@ -53,12 +52,12 @@ namespace OnTwos.Editor
             }
             EditorGUILayout.EndFoldoutHeaderGroup();
 
-            _foldDeath = EditorGUILayout.BeginFoldoutHeaderGroup(_foldDeath, K.DeathRagdoll);
-            if (_foldDeath)
+            _foldRagdoll = EditorGUILayout.BeginFoldoutHeaderGroup(_foldRagdoll, K.Ragdoll);
+            if (_foldRagdoll)
             {
                 EditorGUI.indentLevel++;
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("DeathRagdoll"), true);
-                if (profile.DeathRagdoll.MaxHoldFrames < profile.DeathRagdoll.MinHoldFrames)
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("Ragdoll"), true);
+                if (profile.Ragdoll.MaxHoldFrames < profile.Ragdoll.MinHoldFrames)
                     EditorGUILayout.HelpBox("Max Hold Frames < Min Hold Frames — every frame will force a snap.", MessageType.Warning);
                 EditorGUI.indentLevel--;
             }
@@ -71,7 +70,7 @@ namespace OnTwos.Editor
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Settling"), true);
                 if (profile.Settling.WakeVelocityThreshold <= profile.Settling.SettleVelocityThreshold)
                     EditorGUILayout.HelpBox(
-                        "Wake threshold <= Settle threshold. The ragdoll will wake on the same noise that should settle it.",
+                        "Wake threshold <= Settle threshold. The rig will wake on the same noise that should settle it.",
                         MessageType.Warning);
                 EditorGUI.indentLevel--;
             }
@@ -100,9 +99,8 @@ namespace OnTwos.Editor
             {
                 EditorGUI.indentLevel++;
                 EditorGUILayout.HelpBox(
-                    "Live preview is available in Play mode while a OnTwosAuthoring instance " +
-                    "is active in the scene. Use Window → CrunchyRagdoll → Preview to open the " +
-                    "telemetry window.",
+                    "Live telemetry is available in Play Mode while an OnTwosAuthoring instance " +
+                    "is active in the scene. Use Window → CrunchyRagdoll → Preview.",
                     MessageType.Info);
                 if (GUILayout.Button("Open Preview Window"))
                     Windows.CrunchyRagdollPreviewWindow.ShowWindow();
@@ -117,8 +115,8 @@ namespace OnTwos.Editor
         {
             EditorGUILayout.LabelField("CrunchyRagdoll Profile", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
-                "Tuning preset for the stepped-animation and ragdoll systems. Assign to a " +
-                "OnTwosAuthoring on each enemy prefab that should use these values.",
+                "Tuning preset for the stepped-animation and ragdoll systems. " +
+                "Assign to an OnTwosAuthoring component on any rig that should use these values.",
                 MessageType.None);
             EditorGUILayout.Space(4);
         }

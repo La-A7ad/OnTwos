@@ -137,8 +137,11 @@ namespace OnTwos.Runtime
 
         private string[] ResolveExcludeKeywords()
             => Profile != null ? Profile.LiveAnimation.ExcludeKeywords : ExcludeKeywords;
-    
-         private Transform[] ResolveExcludeBones()
-    => Profile != null ? Profile.LiveAnimation.ExcludeBones : ExcludeBones;
+
+        // ExcludeBones are direct Transform[] references — these are scene-object
+        // references and cannot be stored in an OnTwosProfile (project assets cannot
+        // reference scene objects). The profile only carries keyword-based exclusion
+        // via LiveAnimation.ExcludeKeywords. Per-instance bone references stay here.
+        private Transform[] ResolveExcludeBones() => ExcludeBones;
     }
 }

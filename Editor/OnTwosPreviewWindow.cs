@@ -39,7 +39,6 @@ namespace OnTwos.Editor.Windows
         private void OnEditorUpdate()
         {
             if (!_autoRepaint) return;
-            if (!EditorApplication.isPlaying) return;
             double now = EditorApplication.timeSinceStartup;
             if (now - _lastRepaint > RepaintInterval)
             {
@@ -66,8 +65,38 @@ namespace OnTwos.Editor.Windows
             if (authoringInstances.Count == 0)
             {
                 EditorGUILayout.HelpBox(
-                    "No OnTwosAuthoring components found in the active scene.",
+                    "No OnTwosAuthoring components found in the active scene.\n" +
+                    "Add OnTwosAuthoring to a character GameObject and assign a Profile.",
                     MessageType.Info);
+                return;
+            }
+
+            if (!EditorApplication.isPlaying)
+            {
+                EditorGUILayout.HelpBox(
+                    "Edit Mode — showing wired components. Enter Play Mode for live telemetry.",
+                    MessageType.None);
+                EditorGUILayout.Space(4);
+                _scroll = EditorGUILayout.BeginScrollView(_scroll);
+                foreach (var a in authoringInstances)
+                {
+                    using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                    {
+                        EditorGUILayout.ObjectField(a.gameObject.name, a, typeof(OnTwosAuthoring), true);
+                        EditorGUI.indentLevel++;
+                        var profile = a.Profile;
+                        EditorGUILayout.LabelField("Profile",      profile          ? profile.name          : "<none>");
+                        EditorGUILayout.LabelField("Animator",     a.AnimatorRoot   ? a.AnimatorRoot.name   : "<none>");
+                        EditorGUILayout.LabelField("BoneRoot",     a.BoneRoot       ? a.BoneRoot.name       : "<none>");
+                        EditorGUILayout.LabelField("PhysicsRoot",  a.PhysicsRoot    ? a.PhysicsRoot.name    : "<none>");
+                        string issue = a.Validate();
+                        if (issue != null)
+                            EditorGUILayout.HelpBox(issue, MessageType.Warning);
+                        EditorGUI.indentLevel--;
+                    }
+                    EditorGUILayout.Space();
+                }
+                EditorGUILayout.EndScrollView();
                 return;
             }
 
@@ -100,9 +129,12 @@ namespace OnTwos.Editor.Windows
                 {
                     EditorGUILayout.ObjectField(a.gameObject.name, a, typeof(OnTwosAuthoring), true);
                     GUILayout.FlexibleSpace();
-                    GUI.enabled = EditorApplication.isPlaying;
-                    if (GUILayout.Button("GoLimp", GUILayout.Width(70)))
-                        a.GoLimp();
+                    GUI.enabled = EditorApplication.isPlaying && !a.IsRagdollActive;
+                    if (GUILayout.Button("Activate", GUILayout.Width(70)))
+                        a.ActivateRagdoll();
+                    GUI.enabled = EditorApplication.isPlaying && a.IsRagdollActive;
+                    if (GUILayout.Button("Deactivate", GUILayout.Width(80)))
+                        a.Deactivate();
                     GUI.enabled = true;
                 }
 
@@ -112,7 +144,7 @@ namespace OnTwos.Editor.Windows
                 EditorGUILayout.LabelField("Profile", profile ? profile.name : "<none>");
                 EditorGUILayout.LabelField("Animator", a.AnimatorRoot ? a.AnimatorRoot.name : "<none>");
                 EditorGUILayout.LabelField("BoneRoot", a.BoneRoot ? a.BoneRoot.name : "<none>");
-                EditorGUILayout.LabelField("RagdollRoot", a.RagdollRoot ? a.RagdollRoot.name : "<none>");
+                EditorGUILayout.LabelField("PhysicsRoot", a.PhysicsRoot ? a.PhysicsRoot.name : "<none>");
 
                 var animStep = a.GetComponent<AnimationStepper>();
                 var ragStep = a.GetComponent<RagdollStepper>();

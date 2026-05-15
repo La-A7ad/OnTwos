@@ -1,6 +1,6 @@
 # OnTwos
 
-Stop-motion / stepped animation for live humanoids and death ragdolls in Unity.
+Stop-motion / stepped animation in Unity.
 A self-contained asset implementing PCHIP-based motion quantization for
 animator-driven rigs and physics ragdolls.
 
@@ -20,8 +20,13 @@ hand-animated stop-motion rather than smooth linear interpolation.
 - **`OnTwosProfile`** — a ScriptableObject holding all the tuning
   (τ values, hold-frame bounds, settle thresholds, bone-exclusion keywords,
   per-bone overrides). Drop one onto an authoring component and you're done.
-- **`OnTwosAuthoring`** — single MonoBehaviour entry point. Call `GoLimp()`
-  from your own death code to trigger the ragdoll stepper.
+- **`RagdollStepper`** — exposes `OnSettled` and `OnWoke` C# events so you
+  can hook dissolves, despawns, prop swaps, or re-enable interactions without
+  polling. `IsSettled` and `VisualProxy` are also public properties.
+- **`OnTwosAuthoring`** — single MonoBehaviour entry point. Call `ActivateRagdoll()`
+  from your own code to switch from animator-driven to physics-driven stepped motion.
+  Call `Deactivate()` to reverse the transition (get-up, revival, stagger recovery).
+  `GoLimp()` is still present but deprecated — prefer `ActivateRagdoll()`.
 
 ## Install
 
@@ -38,9 +43,15 @@ Unity 2021.3 LTS and newer should work. Unity 6 is supported — the runtime use
 1. `Assets → Create → OnTwos → Profile` to make a profile asset.
 2. Add `OnTwosAuthoring` to a humanoid character GameObject.
 3. Drag the profile onto the authoring's `Profile` slot.
-4. Add `AnimationStepper` and/or `RagdollStepper` to the same GameObject.
-5. For ragdoll: call `GetComponent<OnTwosAuthoring>().GoLimp()` from
-   whatever your game does on death.
+4. `AnimationStepper` is added automatically on Awake when `AutoBindOnAwake`
+   is true (the default). You only need to add it manually if you have turned
+   `AutoBindOnAwake` off. `RagdollStepper` is likewise created automatically
+   the first time `GoLimp()` is called when `AutoCreateProxy` is true.
+5. For physics-driven motion: call `GetComponent<OnTwosAuthoring>().ActivateRagdoll()`
+   from your own code. You can also right-click the `OnTwosAuthoring` component in
+   the Inspector during Play Mode and choose **ActivateRagdoll (Test)** to trigger
+   it without writing any code.
+6. To reverse it (get-up, revival): call `GetComponent<OnTwosAuthoring>().Deactivate()`.
 
 ## Folder layout
 

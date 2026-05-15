@@ -1,17 +1,13 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using OnTwos.Runtime.Math;
 using OnTwos.Runtime.Utilities;
 
-public OnTwosProfile Profile;
-public Transform RagdollRoot;
-
-
-
 namespace OnTwos.Runtime
 {
     /// <summary>
-    /// Crunchy ragdoll driver — now using the full PCHIP pipeline per bone.
+    /// Crunchy ragdoll driver — uses the full PCHIP pipeline per bone.
     ///
     /// Previously: TrajectoryRecorder captured raw snapshots, ShouldSnap() did a
     /// naive Quaternion.Angle + Vector3.Distance check against a fixed min/max
@@ -34,6 +30,11 @@ namespace OnTwos.Runtime
     /// </summary>
     public class RagdollStepper : MonoBehaviour
     {
+        // ------------------------------------------------------------------ public fields
+
+        public OnTwosProfile Profile;
+        public Transform PhysicsRoot;
+
         [Header("Crunch feel")]
         public float Tau         = 12f;    // degrees of rotation before the proxy snaps
         public float PositionTau = 0.08f;  // world units of translation before the proxy snaps
@@ -45,8 +46,44 @@ namespace OnTwos.Runtime
         public float WakeVelocityThreshold   = 3.0f;
 
         [Header("Proxy rig")]
-        public bool HideSourceRenderers = true;
+        public bool HideSourceRenderers  = true;
         public bool StripProxyComponents = true;
+
+        [Tooltip("When true, ApplyHeldPoses() is skipped while every Renderer on the visual " +
+                 "proxy is off-screen. The PCHIP schedulers keep running (samples are still " +
+                 "consumed and state stays coherent) so there is no visible pop when the " +
+                 "proxy becomes visible again — only the per-frame pose writes are skipped. " +
+                 "Default off so existing scenes behave identically; enable on large hordes.")]
+        public bool EnableVisibilityCulling = false;
+
+        // ------------------------------------------------------------------ events
+
+        /// <summary>
+        /// Fired once when all tracked bodies have been still for <see cref="SettleTime"/>
+        /// seconds. Use this to trigger dissolves, despawns, prop swaps, or any
+        /// post-ragdoll logic without polling <see cref="IsSettled"/> every frame.
+        /// </summary>
+        public event Action OnSettled;
+
+        /// <summary>
+        /// Fired when the ragdoll wakes after having settled (e.g. the body is
+        /// struck or kicked). Not fired on the initial activation.
+        /// </summary>
+        public event Action OnWoke;
+
+        // ------------------------------------------------------------------ properties
+
+        /// <summary>True once all tracked bodies have been still for <see cref="SettleTime"/> seconds.</summary>
+        public bool IsSettled => _settled;
+
+        /// <summary>
+        /// The transform-only visual proxy created by this stepper, or null before
+        /// <see cref="Start"/> has run. Use this to reparent the proxy, attach effects,
+        /// or destroy it independently of the source rig.
+        /// </summary>
+        public GameObject VisualProxy => _visualProxyRoot;
+
+        // ------------------------------------------------------------------ private state
 
         // One scheduler per tracked Rigidbody — drives rotation via the full
         // PCHIP → extrema → arc-length → deviation-threshold pipeline.
@@ -67,14 +104,29 @@ namespace OnTwos.Runtime
         private Renderer[] _sourceRenderers;
         private Animator   _sourceAnimator;
 
+        // Cached set of every Renderer on the visual proxy. Used by visibility culling
+        // to early-exit ApplyHeldPoses when none of them are on-screen. Populated once
+        // after BuildVisualProxy() finishes. Polling Renderer.isVisible is preferred
+        // here over OnBecameVisible/Invisible callbacks: callbacks fire only on state
+        // changes, so multi-renderer setups need explicit bootstrap and ref-counting
+        // to track which renderers started visible. Polling sidesteps both issues —
+        // an early-exit loop over a handful of renderers is well under a microsecond.
+        private Renderer[] _proxyRenderers;
+
         // ------------------------------------------------------------------ lifecycle
 
         private void Start()
         {
-            _startTime     = Time.fixedTime;
+            _startTime      = Time.fixedTime;
             _sourceAnimator = GetComponentInChildren<Animator>(true);
 
             BuildVisualProxy();   // must be first — Instantiate copies component state
+
+            // Cache the proxy's renderer set for visibility culling. Done immediately
+            // after the proxy is built (and before any source renderers are disabled)
+            // so we capture exactly the renderers the user will see at runtime.
+            if (_visualProxyRoot != null)
+                _proxyRenderers = _visualProxyRoot.GetComponentsInChildren<Renderer>(true);
 
             if (_sourceAnimator != null)
                 _sourceAnimator.enabled = false;
@@ -92,7 +144,7 @@ namespace OnTwos.Runtime
             if (_sourceBodies == null || _sourceBodies.Length == 0 ||
                 _visualBones  == null || _visualBones.Length  == 0)
             {
-                Debug.Log.LogWarning($"[RagdollStepper] {gameObject.name} — no tracked ragdoll bodies found.");
+                Debug.LogWarning($"[RagdollStepper] {gameObject.name} — no tracked ragdoll bodies found.");
                 enabled = false;
                 return;
             }
@@ -100,7 +152,7 @@ namespace OnTwos.Runtime
             _anchorIndex = PickAnchorIndex(_sourceBodies);
             InitSchedulers();
 
-            Debug.Log.LogInfo(
+            Debug.Log(
                 $"[RagdollStepper] {gameObject.name} — {_sourceBodies.Length} tracked bones, " +
                 $"PCHIP pipeline active (τ={Tau}°)");
         }
@@ -141,8 +193,8 @@ namespace OnTwos.Runtime
             if (_sourceBodies.Length == 0) return;
 
             float t      = Time.fixedTime;
-            float liveTau = Profile.RagdollTau;
-            float posTau  = Profile.RagdollPosTau;
+            float liveTau = Profile.Ragdoll.RagdollTau;
+            float posTau  = Profile.Ragdoll.RagdollPosTau;
 
             if (!_initialized)
             {
@@ -162,8 +214,8 @@ namespace OnTwos.Runtime
             {
                 if (AnchorWoke())
                 {
-                    _settled      = false;
-                    _settleTimer  = 0f;
+                    _settled     = false;
+                    _settleTimer = 0f;
 
                     // Reseed schedulers from current physics state so the
                     // PCHIP window doesn't try to fit across the settle gap.
@@ -175,8 +227,8 @@ namespace OnTwos.Runtime
                         _heldRotations[i] = _sourceBodies[i].rotation;
                     }
 
-                    Debug.Log.LogInfo(
-                        $"[RagdollStepper] {gameObject.name} woke at t+{t - _startTime:F2}s");
+                    Debug.Log($"[RagdollStepper] {gameObject.name} woke at t+{t - _startTime:F2}s");
+                    OnWoke?.Invoke();
                 }
                 else
                 {
@@ -223,6 +275,12 @@ namespace OnTwos.Runtime
         {
             if (_visualBones == null || _heldPositions == null || _heldRotations == null) return;
 
+            // Visibility culling: skip the per-bone Transform writes while the proxy is
+            // entirely off-screen. The PCHIP schedulers in FixedUpdate keep running so
+            // state stays coherent — when visibility resumes, the very next frame's
+            // ApplyHeldPoses snaps to the up-to-date held pose with no visible pop.
+            if (EnableVisibilityCulling && !IsProxyVisible()) return;
+
             int count = Mathf.Min(_visualBones.Length, _heldPositions.Length);
             for (int i = 0; i < count; i++)
             {
@@ -230,6 +288,20 @@ namespace OnTwos.Runtime
                 _visualBones[i].position = _heldPositions[i];
                 _visualBones[i].rotation = _heldRotations[i];
             }
+        }
+
+        // Returns true if any Renderer on the visual proxy is currently on-screen.
+        // Early-exits on the first visible renderer — average cost is well below a
+        // microsecond for typical rig renderer counts (~5–30).
+        private bool IsProxyVisible()
+        {
+            if (_proxyRenderers == null) return true;
+            for (int i = 0; i < _proxyRenderers.Length; i++)
+            {
+                var r = _proxyRenderers[i];
+                if (r != null && r.isVisible) return true;
+            }
+            return false;
         }
 
         // ------------------------------------------------------------------ settle
@@ -242,8 +314,8 @@ namespace OnTwos.Runtime
                 if (_settleTimer >= SettleTime)
                 {
                     _settled = true;
-                    Debug.Log.LogInfo(
-                        $"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
+                    Debug.Log($"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
+                    OnSettled?.Invoke();
                 }
             }
             else
@@ -258,7 +330,12 @@ namespace OnTwos.Runtime
             {
                 Rigidbody rb = _sourceBodies[i];
                 if (rb == null) continue;
-                if (rb.velocity.magnitude          > SettleVelocityThreshold ||
+#if UNITY_6000_0_OR_NEWER
+                float linSpeed = rb.linearVelocity.magnitude;
+#else
+                float linSpeed = rb.velocity.magnitude;
+#endif
+                if (linSpeed > SettleVelocityThreshold ||
                     rb.angularVelocity.magnitude * Mathf.Rad2Deg > SettleAngularThreshold)
                     return false;
             }
@@ -270,7 +347,12 @@ namespace OnTwos.Runtime
             if (_anchorIndex >= _sourceBodies.Length) return false;
             Rigidbody rb = _sourceBodies[_anchorIndex];
             if (rb == null) return false;
-            return rb.velocity.magnitude          >= WakeVelocityThreshold ||
+#if UNITY_6000_0_OR_NEWER
+            float linSpeed = rb.linearVelocity.magnitude;
+#else
+            float linSpeed = rb.velocity.magnitude;
+#endif
+            return linSpeed >= WakeVelocityThreshold ||
                    rb.angularVelocity.magnitude * Mathf.Rad2Deg >= WakeVelocityThreshold * 6f;
         }
 
@@ -308,8 +390,8 @@ namespace OnTwos.Runtime
 
         private void CacheTrackedBodiesAndBones()
         {
-            Rigidbody[] allBodies    = GetComponentsInChildren<Rigidbody>(true);
-            Transform   proxyRoot    = _visualProxyRoot.transform;
+            Rigidbody[] allBodies     = GetComponentsInChildren<Rigidbody>(true);
+            Transform   proxyRoot     = _visualProxyRoot.transform;
             Transform[] proxyTransforms = _visualProxyRoot.GetComponentsInChildren<Transform>(true);
 
             var proxyLookup = new Dictionary<string, Transform>(proxyTransforms.Length);
@@ -329,7 +411,7 @@ namespace OnTwos.Runtime
                 string path = GetPath(transform, rb.transform);
                 if (!proxyLookup.TryGetValue(path, out Transform proxyBone) || proxyBone == null)
                 {
-                    Debug.Log.LogWarning($"[RagdollStepper] Missing proxy match for '{path}'");
+                    Debug.LogWarning($"[RagdollStepper] Missing proxy match for '{path}'");
                     continue;
                 }
                 sourceList.Add(rb);
@@ -343,8 +425,9 @@ namespace OnTwos.Runtime
         // ------------------------------------------------------------------ prune
 
         /// <summary>
-        /// Removes bones destroyed/deactivated by ULTRAKILL's dismemberment system.
-        /// Also prunes the parallel scheduler, heldPosition, and heldRotation arrays.
+        /// Removes bodies that have been destroyed or deactivated (e.g. by the
+        /// game's dismemberment or destruction system). Also prunes the parallel
+        /// scheduler, heldPosition, and heldRotation arrays.
         /// </summary>
         private void PruneDestroyedBodies()
         {
@@ -356,11 +439,11 @@ namespace OnTwos.Runtime
             }
             if (!dirty) return;
 
-            var newBodies   = new List<Rigidbody>(_sourceBodies.Length);
-            var newBones    = new List<Transform>(_visualBones.Length);
-            var newSched    = new List<HoldFrameScheduler>(_schedulers.Length);
-            var newHeldPos  = new List<Vector3>(_heldPositions.Length);
-            var newHeldRot  = new List<Quaternion>(_heldRotations.Length);
+            var newBodies  = new List<Rigidbody>(_sourceBodies.Length);
+            var newBones   = new List<Transform>(_visualBones.Length);
+            var newSched   = new List<HoldFrameScheduler>(_schedulers.Length);
+            var newHeldPos = new List<Vector3>(_heldPositions.Length);
+            var newHeldRot = new List<Quaternion>(_heldRotations.Length);
 
             for (int i = 0; i < _sourceBodies.Length; i++)
             {
@@ -388,7 +471,7 @@ namespace OnTwos.Runtime
             _heldPositions = newHeldPos.ToArray();
             _heldRotations = newHeldRot.ToArray();
 
-            Debug.Log.LogInfo(
+            Debug.Log(
                 $"[RagdollStepper] {gameObject.name} pruned {removed} bone(s), " +
                 $"{_sourceBodies.Length} remaining");
 
@@ -420,16 +503,16 @@ namespace OnTwos.Runtime
 
         private static void StripToRenderersOnly(GameObject root)
         {
-            foreach (var j in root.GetComponentsInChildren<Joint>(true))
-                if (j != null) Destroy(j);
+            foreach (var j  in root.GetComponentsInChildren<Joint>(true))
+                if (j  != null) Destroy(j);
             foreach (var rb in root.GetComponentsInChildren<Rigidbody>(true))
                 if (rb != null) Destroy(rb);
-            foreach (var c in root.GetComponentsInChildren<Collider>(true))
-                if (c != null) Destroy(c);
+            foreach (var c  in root.GetComponentsInChildren<Collider>(true))
+                if (c  != null) Destroy(c);
             foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
                 if (mb != null) DestroyImmediate(mb);
-            foreach (var a in root.GetComponentsInChildren<Animator>(true))
-                if (a != null) DestroyImmediate(a);
+            foreach (var a  in root.GetComponentsInChildren<Animator>(true))
+                if (a  != null) DestroyImmediate(a);
         }
 
         private static int PickAnchorIndex(Rigidbody[] bodies)
@@ -446,7 +529,7 @@ namespace OnTwos.Runtime
 
         // ------------------------------------------------------------------ cleanup
 
-        private void OnDestroy()  => CleanupProxy();
+        private void OnDestroy() => CleanupProxy();
         private void OnDisable()
         {
             if (_sourceRenderers != null)
