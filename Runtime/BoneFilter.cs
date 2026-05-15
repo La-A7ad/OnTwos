@@ -9,21 +9,26 @@ namespace OnTwos.Runtime.Utilities
     /// rest of the rig gets the stylized look.
     /// </summary>
     public static class BoneFilter
+{
+    public static bool IsExcluded(Transform bone, Transform[] excludeBones, string[] excludeKeywords)
     {
-        public static bool IsExcluded(string boneName, string[] excludeKeywords)
-        {
-            if (string.IsNullOrEmpty(boneName)) return false;
-            if (excludeKeywords == null || excludeKeywords.Length == 0) return false;
+        // Direct reference check first — unambiguous
+        if (excludeBones != null)
+            for (int i = 0; i < excludeBones.Length; i++)
+                if (excludeBones[i] == bone) return true;
 
-            string lower = boneName.ToLowerInvariant();
-            for (int i = 0; i < excludeKeywords.Length; i++)
-            {
-                string kw = excludeKeywords[i];
-                if (string.IsNullOrEmpty(kw)) continue;
-                if (lower.Contains(kw.ToLowerInvariant()))
-                    return true;
-            }
-            return false;
+        // Keyword fallback — useful for bulk exclusion by naming convention
+        if (string.IsNullOrEmpty(bone.name)) return false;
+        if (excludeKeywords == null || excludeKeywords.Length == 0) return false;
+
+        string lower = bone.name.ToLowerInvariant();
+        for (int i = 0; i < excludeKeywords.Length; i++)
+        {
+            string kw = excludeKeywords[i];
+            if (!string.IsNullOrEmpty(kw) && lower.Contains(kw.ToLowerInvariant()))
+                return true;
         }
+        return false;
     }
+}
 }

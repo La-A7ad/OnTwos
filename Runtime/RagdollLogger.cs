@@ -2,6 +2,7 @@ using System.Text;
 using OnTwos.Runtime.Utilities;
 using UnityEngine;
 
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
 namespace OnTwos.Runtime
 {
     /// <summary>
@@ -159,3 +160,4 @@ namespace OnTwos.Runtime
         }
     }
 }
+#endif

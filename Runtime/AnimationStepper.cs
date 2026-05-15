@@ -1,3 +1,4 @@
+using System;
 using OnTwos.Runtime.Math;
 using OnTwos.Runtime.Utilities;
 using UnityEngine;
@@ -39,7 +40,9 @@ namespace OnTwos.Runtime
         [Header("Fallback settings (used when Profile is null)")]
         [Range(0.5f, 45f)] public float Tau = 5f;
         [Range(1, 4)] public int CandidatesPerSegment = 2;
-        public string[] ExcludeKeywords = { "foot", "toe", "heel" };
+
+        public Transform[] ExcludeBones = Array.Empty<Transform>();
+        public string[] ExcludeKeywords = Array.Empty<string>();
 
         private Transform[] _bones;
         private HoldFrameScheduler[] _schedulers;
@@ -64,13 +67,14 @@ namespace OnTwos.Runtime
             int candidates = ResolveCandidates();
             string[] excludes = ResolveExcludeKeywords();
 
+            Transform[] excludeBones = ResolveExcludeBones();
+            string[] excludeKeywords = ResolveExcludeKeywords();
+
             for (int i = 0; i < _bones.Length; i++)
-            {
-                _excluded[i] = BoneFilter.IsExcluded(_bones[i].name, excludes);
-                _schedulers[i] = _excluded[i]
-                    ? null
-                    : new HoldFrameScheduler(tau, candidates);
-            }
+                {
+            _excluded[i] = BoneFilter.IsExcluded(_bones[i], excludeBones, excludeKeywords);
+            _schedulers[i] = _excluded[i] ? null : new HoldFrameScheduler(tau, candidates);
+                }
 
             _startTime = Time.time;
             _ready = true;
@@ -133,5 +137,8 @@ namespace OnTwos.Runtime
 
         private string[] ResolveExcludeKeywords()
             => Profile != null ? Profile.LiveAnimation.ExcludeKeywords : ExcludeKeywords;
+    
+         private Transform[] ResolveExcludeBones()
+    => Profile != null ? Profile.LiveAnimation.ExcludeBones : ExcludeBones;
     }
 }

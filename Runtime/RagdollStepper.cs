@@ -1,7 +1,14 @@
 using System.Collections.Generic;
 using UnityEngine;
+using OnTwos.Runtime.Math;
+using OnTwos.Runtime.Utilities;
 
-namespace CrunchyRagdoll
+public OnTwosProfile Profile;
+public Transform RagdollRoot;
+
+
+
+namespace OnTwos.Runtime
 {
     /// <summary>
     /// Crunchy ragdoll driver — now using the full PCHIP pipeline per bone.
@@ -85,7 +92,7 @@ namespace CrunchyRagdoll
             if (_sourceBodies == null || _sourceBodies.Length == 0 ||
                 _visualBones  == null || _visualBones.Length  == 0)
             {
-                Plugin.Log.LogWarning($"[RagdollStepper] {gameObject.name} — no tracked ragdoll bodies found.");
+                Debug.Log.LogWarning($"[RagdollStepper] {gameObject.name} — no tracked ragdoll bodies found.");
                 enabled = false;
                 return;
             }
@@ -93,7 +100,7 @@ namespace CrunchyRagdoll
             _anchorIndex = PickAnchorIndex(_sourceBodies);
             InitSchedulers();
 
-            Plugin.Log.LogInfo(
+            Debug.Log.LogInfo(
                 $"[RagdollStepper] {gameObject.name} — {_sourceBodies.Length} tracked bones, " +
                 $"PCHIP pipeline active (τ={Tau}°)");
         }
@@ -101,8 +108,8 @@ namespace CrunchyRagdoll
         private void InitSchedulers()
         {
             int   n          = _sourceBodies.Length;
-            float tau        = Plugin.RagdollTau;
-            int   candidates = Mathf.Clamp(Plugin.GaussPoints, 1, 4);
+            float tau        = ResolveTau();
+            int   candidates = Mathf.Clamp(ResolveCandidates(), 1, 4);
 
             _schedulers    = new HoldFrameScheduler[n];
             _heldPositions = new Vector3[n];
@@ -134,8 +141,8 @@ namespace CrunchyRagdoll
             if (_sourceBodies.Length == 0) return;
 
             float t      = Time.fixedTime;
-            float liveTau = Plugin.RagdollTau;
-            float posTau  = Plugin.RagdollPosTau;
+            float liveTau = Profile.RagdollTau;
+            float posTau  = Profile.RagdollPosTau;
 
             if (!_initialized)
             {
@@ -168,7 +175,7 @@ namespace CrunchyRagdoll
                         _heldRotations[i] = _sourceBodies[i].rotation;
                     }
 
-                    Plugin.Log.LogInfo(
+                    Debug.Log.LogInfo(
                         $"[RagdollStepper] {gameObject.name} woke at t+{t - _startTime:F2}s");
                 }
                 else
@@ -235,7 +242,7 @@ namespace CrunchyRagdoll
                 if (_settleTimer >= SettleTime)
                 {
                     _settled = true;
-                    Plugin.Log.LogInfo(
+                    Debug.Log.LogInfo(
                         $"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
                 }
             }
@@ -322,7 +329,7 @@ namespace CrunchyRagdoll
                 string path = GetPath(transform, rb.transform);
                 if (!proxyLookup.TryGetValue(path, out Transform proxyBone) || proxyBone == null)
                 {
-                    Plugin.Log.LogWarning($"[RagdollStepper] Missing proxy match for '{path}'");
+                    Debug.Log.LogWarning($"[RagdollStepper] Missing proxy match for '{path}'");
                     continue;
                 }
                 sourceList.Add(rb);
@@ -381,7 +388,7 @@ namespace CrunchyRagdoll
             _heldPositions = newHeldPos.ToArray();
             _heldRotations = newHeldRot.ToArray();
 
-            Plugin.Log.LogInfo(
+            Debug.Log.LogInfo(
                 $"[RagdollStepper] {gameObject.name} pruned {removed} bone(s), " +
                 $"{_sourceBodies.Length} remaining");
 
