@@ -1,7 +1,7 @@
 using System;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Recording
+namespace OnTwos.Runtime.Recording
 {
     /// <summary>
     /// A single fixed-timestep ragdoll frame containing a snapshot for each body.

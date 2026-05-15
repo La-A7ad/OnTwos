@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Recording
+namespace OnTwos.Runtime.Recording
 {
     /// <summary>
     /// Immutable per-body physics snapshot used by the ragdoll stepper.

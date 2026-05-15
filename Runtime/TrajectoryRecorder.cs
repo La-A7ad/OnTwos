@@ -1,7 +1,7 @@
 using System;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Recording
+namespace OnTwos.Runtime.Recording
 {
     /// <summary>
     /// Rolling fixed-timestep buffer for ragdoll trajectory capture.

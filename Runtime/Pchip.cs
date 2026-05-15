@@ -1,6 +1,6 @@
 using System;
 
-namespace CrunchyRagdoll.Runtime.Math
+namespace OnTwos.Runtime.Math
 {
     /// <summary>
     /// Piecewise Cubic Hermite Interpolating Polynomial (scalar).

@@ -1,4 +1,4 @@
-# CrunchyRagdoll
+# OnTwos
 
 Stop-motion / stepped animation for live humanoids and death ragdolls in Unity.
 A self-contained asset implementing PCHIP-based motion quantization for
@@ -17,16 +17,16 @@ hand-animated stop-motion rather than smooth linear interpolation.
 - **`RagdollStepper`** — snapshots a physics ragdoll, builds a transform-only
   visual proxy, hides the source, and replays the snapshot stream in stepped
   frames. Settles when motion drops below threshold; wakes if hit again.
-- **`CrunchyRagdollProfile`** — a ScriptableObject holding all the tuning
+- **`OnTwosProfile`** — a ScriptableObject holding all the tuning
   (τ values, hold-frame bounds, settle thresholds, bone-exclusion keywords,
   per-bone overrides). Drop one onto an authoring component and you're done.
-- **`CrunchyRagdollAuthoring`** — single MonoBehaviour entry point. Call `GoLimp()`
+- **`OnTwosAuthoring`** — single MonoBehaviour entry point. Call `GoLimp()`
   from your own death code to trigger the ragdoll stepper.
 
 ## Install
 
-Drop the `CrunchyRagdoll` folder anywhere under `Assets/` in your project. The
-two assembly definitions (`CrunchyRagdoll.Runtime`, `CrunchyRagdoll.Editor`) keep
+Drop the `OnTwos` folder anywhere under `Assets/` in your project. The
+two assembly definitions (`OnTwos.Runtime`, `OnTwos.Editor`) keep
 editor code out of player builds automatically.
 
 Unity 2021.3 LTS and newer should work. Unity 6 is supported — the runtime uses
@@ -35,17 +35,17 @@ Unity 2021.3 LTS and newer should work. Unity 6 is supported — the runtime use
 
 ## Quick start
 
-1. `Assets → Create → CrunchyRagdoll → Profile` to make a profile asset.
-2. Add `CrunchyRagdollAuthoring` to a humanoid character GameObject.
+1. `Assets → Create → OnTwos → Profile` to make a profile asset.
+2. Add `OnTwosAuthoring` to a humanoid character GameObject.
 3. Drag the profile onto the authoring's `Profile` slot.
 4. Add `AnimationStepper` and/or `RagdollStepper` to the same GameObject.
-5. For ragdoll: call `GetComponent<CrunchyRagdollAuthoring>().GoLimp()` from
+5. For ragdoll: call `GetComponent<OnTwosAuthoring>().GoLimp()` from
    whatever your game does on death.
 
 ## Folder layout
 
 ```
-CrunchyRagdoll/
+OnTwos/
 ├── Runtime/        — runtime code, separate asmdef, ships in player builds
 ├── Editor/         — custom inspectors, drawers, preview window
 └── Samples~/       — demo prefab setup walkthrough (see Samples~/README.md)
@@ -57,14 +57,14 @@ CrunchyRagdoll/
   README. Setting up the two demo prefabs manually takes about two minutes and
   produces something more reliable than auto-generated YAML referencing
   imported humanoid rigs.
-- **Offline clip baking is a stub.** `CrunchyRagdollBakeWindow` exposes the API
+- **Offline clip baking is a stub.** `OnTwosBakeWindow` exposes the API
   surface for baking stepped `AnimationClip` assets at edit time, but the bake
   itself is not yet implemented. The runtime path is the priority.
 - **Visual proxy is mandatory for the ragdoll path.** Writing `localRotation`
   directly to non-kinematic bone Rigidbodies causes CharacterJoint constraint
   error to accumulate, and the bodies drift sideways under gravity. The
   `RagdollStepper` always builds a proxy at the scene root with all physics and
-  CrunchyRagdoll components stripped, and writes the stepped pose there.
+  OnTwos components stripped, and writes the stepped pose there.
 
 ## Algorithm summary
 
@@ -89,7 +89,7 @@ the stepper just visually quantizes it.
 
 MIT — see below.
 
-The algorithm, architecture, and design of CrunchyRagdoll are original work by the
+The algorithm, architecture, and design of OnTwos are original work by the
 author. C# implementation was produced with AI assistance.
 
 ```
@@ -118,6 +118,6 @@ SOFTWARE.
 
 ## Where to look
 
-- Profile inspector: open any `CrunchyRagdollProfile` asset.
-- Live telemetry: `Window → CrunchyRagdoll → Preview` (during Play Mode).
+- Profile inspector: open any `OnTwosProfile` asset.
+- Live telemetry: `Window → OnTwos → Preview` (during Play Mode).
 - Per-component foldouts: select an authoring or stepper in the scene.

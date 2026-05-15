@@ -1,14 +1,14 @@
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor.Drawers
+namespace OnTwos.Editor.Drawers
 {
     /// <summary>
-    /// Compact two-column drawer for <see cref="CrunchyRagdollProfile.CurveBinding"/>.
+    /// Compact two-column drawer for <see cref="OnTwosProfile.CurveBinding"/>.
     /// Layout: [Target enum dropdown] [AnimationCurve]
     /// </summary>
-    [CustomPropertyDrawer(typeof(CrunchyRagdollProfile.CurveBinding))]
+    [CustomPropertyDrawer(typeof(OnTwosProfile.CurveBinding))]
     public sealed class CurveBindingDrawer : PropertyDrawer
     {
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)

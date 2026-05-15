@@ -1,12 +1,12 @@
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime
+namespace OnTwos.Runtime
 {
     /// <summary>
     /// Best-effort heuristics for discovering rig roots on a prefab.
-    /// Used by <see cref="CrunchyRagdollAuthoring"/> when its slots are left empty.
+    /// Used by <see cref="OnTwosAuthoring"/> when its slots are left empty.
     /// </summary>
-    public static class CrunchyRagdollAutoBinder
+    public static class OnTwosAutoBinder
     {
         /// <summary>
         /// Find the first Animator under root. Returns null if none exist.

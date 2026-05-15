@@ -1,6 +1,6 @@
 {
-    "name": "CrunchyRagdoll.Runtime",
-    "rootNamespace": "CrunchyRagdoll.Runtime",
+    "name": "OnTwos.Runtime",
+    "rootNamespace": "OnTwos.Runtime",
     "references": [],
     "includePlatforms": [],
     "excludePlatforms": [],

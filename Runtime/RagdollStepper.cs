@@ -272,7 +272,7 @@ namespace CrunchyRagdoll
         private void BuildVisualProxy()
         {
             GameObject clone = Instantiate(gameObject, transform.position, transform.rotation, null);
-            clone.name = gameObject.name + " [CrunchProxy]";
+            clone.name = gameObject.name + " [OnTwosProxy]";
             clone.SetActive(false);
 
             // Kill our own components before SetActive(true) — DestroyImmediate is safe

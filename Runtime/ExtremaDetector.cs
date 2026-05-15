@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace CrunchyRagdoll.Runtime.Math
+namespace OnTwos.Runtime.Math
 {
     /// <summary>
     /// Detects extrema (derivative zero crossings) in a PCHIP curve.

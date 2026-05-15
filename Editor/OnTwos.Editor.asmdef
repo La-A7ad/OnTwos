@@ -1,8 +1,8 @@
 {
-    "name": "CrunchyRagdoll.Editor",
-    "rootNamespace": "CrunchyRagdoll.Editor",
+    "name": "OnTwos.Editor",
+    "rootNamespace": "OnTwos.Editor",
     "references": [
-        "CrunchyRagdoll.Runtime"
+        "OnTwos.Runtime"
     ],
     "includePlatforms": [
         "Editor"

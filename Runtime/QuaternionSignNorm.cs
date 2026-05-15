@@ -1,7 +1,7 @@
 using System;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Math
+namespace OnTwos.Runtime.Math
 {
     /// <summary>
     /// Quaternion hemisphere normalisation.

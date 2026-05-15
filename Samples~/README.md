@@ -1,7 +1,7 @@
-# CrunchyRagdoll — Samples
+# OnTwos — Samples
 
 This folder is reserved for sample prefabs (`DemoEnemy.prefab`, `DemoRagdoll.prefab`)
-demonstrating typical CrunchyRagdoll setups. They are not pre-authored in this drop
+demonstrating typical OnTwos setups. They are not pre-authored in this drop
 because prefab YAML referencing humanoid rigs is fragile across Unity versions and
 across the user's specific imported character. Setting them up by hand takes about
 two minutes and is described below.
@@ -19,10 +19,10 @@ Goal: a character running its `Animator` normally, but visually updated in stepp
 frames so on-screen motion looks stop-motion.
 
 1. Drag any humanoid character with an `Animator` into the scene.
-2. Add `CrunchyRagdollAuthoring` to the root GameObject.
-3. **Create a profile:** `Assets → Create → CrunchyRagdoll → Profile`. Save it as
+2. Add `OnTwosAuthoring` to the root GameObject.
+3. **Create a profile:** `Assets → Create → OnTwos → Profile`. Save it as
    `DemoProfile.asset`.
-4. On the `CrunchyRagdollAuthoring` inspector:
+4. On the `OnTwosAuthoring` inspector:
    - Drag `DemoProfile` into the `Profile` field.
    - Leave `Animator Root`, `Bone Root`, and `Ragdoll Root` empty —
      `AutoBindOnAwake` will fill them.
@@ -43,13 +43,13 @@ plays back in stepped frames, so the ragdoll tumble has stop-motion feel.
 
 1. Same starting point as DemoEnemy — a character with `Animator` and a working
    ragdoll (Rigidbody + Collider + Joints on every bone).
-2. Add `CrunchyRagdollAuthoring` and assign `DemoProfile`.
+2. Add `OnTwosAuthoring` and assign `DemoProfile`.
 3. Add a `RagdollStepper` component.
 4. From your gameplay code, kill the character normally (whatever your game does
    to enable the ragdoll), then call:
 
    ```csharp
-   GetComponent<CrunchyRagdollAuthoring>().GoLimp();
+   GetComponent<OnTwosAuthoring>().GoLimp();
    ```
 
    That single call tells the `RagdollStepper` to build the visual proxy, hide the

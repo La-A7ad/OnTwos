@@ -1,23 +1,23 @@
 using System;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime
+namespace OnTwos.Runtime
 {
     /// <summary>
     /// Asset-driven configuration for the CrunchyRagdoll system.
     ///
     /// Create one of these per stylistic preset (e.g. "Default Crunch",
-    /// "Heavy Stop-Motion", "Subtle"), then assign to the CrunchyRagdollAuthoring
+    /// "Heavy Stop-Motion", "Subtle"), then assign to the OnTwosAuthoring
     /// component on each enemy prefab. Multiple prefabs can share one profile;
     /// edits propagate to every user on save.
     ///
     /// All values are tuning data; nothing here is per-instance state. Per-instance
     /// state lives on the AnimationStepper / RagdollStepper MonoBehaviours.
     /// </summary>
-    [CreateAssetMenu(fileName = "CrunchyRagdollProfile",
+    [CreateAssetMenu(fileName = "OnTwosProfile",
                      menuName = "CrunchyRagdoll/Profile",
                      order = 100)]
-    public sealed class CrunchyRagdollProfile : ScriptableObject
+    public sealed class OnTwosProfile : ScriptableObject
     {
         public GlobalSettings Global = new GlobalSettings();
         public LiveAnimationSettings LiveAnimation = new LiveAnimationSettings();

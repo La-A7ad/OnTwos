@@ -1,7 +1,7 @@
-using CrunchyRagdoll.Runtime.Utilities;
+using OnTwos.Runtime.Utilities;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime
+namespace OnTwos.Runtime
 {
     /// <summary>
     /// Drop this on the root of an enemy prefab to enable CrunchyRagdoll.
@@ -17,9 +17,9 @@ namespace CrunchyRagdoll.Runtime
     /// </summary>
     [AddComponentMenu("CrunchyRagdoll/Authoring")]
     [DisallowMultipleComponent]
-    public sealed class CrunchyRagdollAuthoring : MonoBehaviour, ICrunchyComponent
+    public sealed class OnTwosAuthoring : MonoBehaviour, IOnTwosComponent
     {
-        public CrunchyRagdollProfile Profile;
+        public OnTwosProfile Profile;
         public Animator AnimatorRoot;
         public Transform BoneRoot;
         public Transform RagdollRoot;
@@ -55,13 +55,13 @@ namespace CrunchyRagdoll.Runtime
         public void AutoResolveBindings()
         {
             if (AnimatorRoot == null)
-                AnimatorRoot = CrunchyRagdollAutoBinder.FindAnimator(transform);
+                AnimatorRoot = OnTwosAutoBinder.FindAnimator(transform);
 
             if (BoneRoot == null)
-                BoneRoot = CrunchyRagdollAutoBinder.FindBoneRoot(transform, AnimatorRoot);
+                BoneRoot = OnTwosAutoBinder.FindBoneRoot(transform, AnimatorRoot);
 
             if (RagdollRoot == null)
-                RagdollRoot = CrunchyRagdollAutoBinder.FindRagdollRoot(transform);
+                RagdollRoot = OnTwosAutoBinder.FindRagdollRoot(transform);
         }
 
         /// <summary>
@@ -113,7 +113,7 @@ namespace CrunchyRagdoll.Runtime
             if (AnimatorRoot == null) return "AnimatorRoot is null. Animator state transitions will not flush hold buffers.";
             if (BoneRoot == null) return "BoneRoot is null. AnimationStepper will fall back to the root transform.";
             if (AutoCreateProxy && RagdollRoot == null) return "RagdollRoot is null and AutoCreateProxy is on. The proxy build will use the GameObject this component is on.";
-            if (AutoCreateProxy && !CrunchyRagdollAutoBinder.HasRagdoll(RagdollRoot ?? transform))
+            if (AutoCreateProxy && !OnTwosAutoBinder.HasRagdoll(RagdollRoot ?? transform))
                 return "RagdollRoot has no CharacterJoint/HingeJoint/ConfigurableJoint. The visual proxy will be empty.";
             return null;
         }

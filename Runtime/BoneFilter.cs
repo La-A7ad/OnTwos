@@ -1,4 +1,4 @@
-namespace CrunchyRagdoll.Runtime.Utilities
+namespace OnTwos.Runtime.Utilities
 {
     /// <summary>
     /// Tests whether a bone should be excluded from stepping based on its name.

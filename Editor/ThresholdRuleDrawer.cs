@@ -1,14 +1,14 @@
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor.Drawers
+namespace OnTwos.Editor.Drawers
 {
     /// <summary>
-    /// Compact single-line drawer for <see cref="CrunchyRagdollProfile.ThresholdRule"/>.
+    /// Compact single-line drawer for <see cref="OnTwosProfile.ThresholdRule"/>.
     /// Layout: [name filter] [rot τ] [pos τ]
     /// </summary>
-    [CustomPropertyDrawer(typeof(CrunchyRagdollProfile.ThresholdRule))]
+    [CustomPropertyDrawer(typeof(OnTwosProfile.ThresholdRule))]
     public sealed class ThresholdRuleDrawer : PropertyDrawer
     {
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)

@@ -1,8 +1,8 @@
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor
+namespace OnTwos.Editor
 {
     [CustomEditor(typeof(AnimationStepper))]
     public sealed class AnimationStepperEditor : UnityEditor.Editor

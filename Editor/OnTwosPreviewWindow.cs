@@ -1,13 +1,13 @@
 using System.Collections.Generic;
 using System.Reflection;
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor.Windows
+namespace OnTwos.Editor.Windows
 {
     /// <summary>
-    /// EditorWindow that lists every <see cref="CrunchyRagdollAuthoring"/> in the active scene
+    /// EditorWindow that lists every <see cref="OnTwosAuthoring"/> in the active scene
     /// and surfaces basic runtime telemetry (settled flag, frames since snap, bone counts).
     /// Mostly useful for debugging during Play Mode; in Edit Mode it just lists the assets.
     /// </summary>
@@ -66,7 +66,7 @@ namespace CrunchyRagdoll.Editor.Windows
             if (authoringInstances.Count == 0)
             {
                 EditorGUILayout.HelpBox(
-                    "No CrunchyRagdollAuthoring components found in the active scene.",
+                    "No OnTwosAuthoring components found in the active scene.",
                     MessageType.Info);
                 return;
             }
@@ -80,25 +80,25 @@ namespace CrunchyRagdoll.Editor.Windows
             EditorGUILayout.EndScrollView();
         }
 
-        private static List<CrunchyRagdollAuthoring> FindAuthoringInstances()
+        private static List<OnTwosAuthoring> FindAuthoringInstances()
         {
 #if UNITY_2023_1_OR_NEWER
-            var all = Object.FindObjectsByType<CrunchyRagdollAuthoring>(FindObjectsSortMode.None);
+            var all = Object.FindObjectsByType<OnTwosAuthoring>(FindObjectsSortMode.None);
 #else
-            var all = Object.FindObjectsOfType<CrunchyRagdollAuthoring>();
+            var all = Object.FindObjectsOfType<OnTwosAuthoring>();
 #endif
-            var list = new List<CrunchyRagdollAuthoring>(all.Length);
+            var list = new List<OnTwosAuthoring>(all.Length);
             list.AddRange(all);
             return list;
         }
 
-        private void DrawAuthoringBlock(CrunchyRagdollAuthoring a)
+        private void DrawAuthoringBlock(OnTwosAuthoring a)
         {
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    EditorGUILayout.ObjectField(a.gameObject.name, a, typeof(CrunchyRagdollAuthoring), true);
+                    EditorGUILayout.ObjectField(a.gameObject.name, a, typeof(OnTwosAuthoring), true);
                     GUILayout.FlexibleSpace();
                     GUI.enabled = EditorApplication.isPlaying;
                     if (GUILayout.Button("GoLimp", GUILayout.Width(70)))

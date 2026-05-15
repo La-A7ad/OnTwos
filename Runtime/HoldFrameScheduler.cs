@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Math
+namespace OnTwos.Runtime.Math
 {
     /// <summary>
     /// Full pipeline: PCHIP curve → extrema → arc-length hold candidates

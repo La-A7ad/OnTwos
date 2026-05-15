@@ -1,11 +1,11 @@
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor
+namespace OnTwos.Editor
 {
-    [CustomEditor(typeof(CrunchyRagdollProfile))]
-    public sealed class CrunchyRagdollProfileEditor : UnityEditor.Editor
+    [CustomEditor(typeof(OnTwosProfile))]
+    public sealed class OnTwosProfileEditor : UnityEditor.Editor
     {
         // Foldout names per architecture spec.
         private static class K
@@ -31,7 +31,7 @@ namespace CrunchyRagdoll.Editor
         {
             serializedObject.Update();
 
-            var profile = (CrunchyRagdollProfile)target;
+            var profile = (OnTwosProfile)target;
 
             DrawHeader();
 
@@ -100,7 +100,7 @@ namespace CrunchyRagdoll.Editor
             {
                 EditorGUI.indentLevel++;
                 EditorGUILayout.HelpBox(
-                    "Live preview is available in Play mode while a CrunchyRagdollAuthoring instance " +
+                    "Live preview is available in Play mode while a OnTwosAuthoring instance " +
                     "is active in the scene. Use Window → CrunchyRagdoll → Preview to open the " +
                     "telemetry window.",
                     MessageType.Info);
@@ -118,7 +118,7 @@ namespace CrunchyRagdoll.Editor
             EditorGUILayout.LabelField("CrunchyRagdoll Profile", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
                 "Tuning preset for the stepped-animation and ragdoll systems. Assign to a " +
-                "CrunchyRagdollAuthoring on each enemy prefab that should use these values.",
+                "OnTwosAuthoring on each enemy prefab that should use these values.",
                 MessageType.None);
             EditorGUILayout.Space(4);
         }

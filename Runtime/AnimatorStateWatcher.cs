@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Utilities
+namespace OnTwos.Runtime.Utilities
 {
     /// <summary>
     /// Watches a single Animator layer for state transitions.

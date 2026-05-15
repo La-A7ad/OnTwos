@@ -1,12 +1,12 @@
-using CrunchyRagdoll.Runtime;
-using CrunchyRagdoll.Runtime.Utilities;
+using OnTwos.Runtime;
+using OnTwos.Runtime.Utilities;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor
+namespace OnTwos.Editor
 {
-    [CustomEditor(typeof(CrunchyRagdollAuthoring))]
-    public sealed class CrunchyRagdollAuthoringEditor : UnityEditor.Editor
+    [CustomEditor(typeof(OnTwosAuthoring))]
+    public sealed class OnTwosAuthoringEditor : UnityEditor.Editor
     {
         private bool _foldBindings = true;
         private bool _foldAutoSetup = true;
@@ -16,7 +16,7 @@ namespace CrunchyRagdoll.Editor
         public override void OnInspectorGUI()
         {
             serializedObject.Update();
-            var authoring = (CrunchyRagdollAuthoring)target;
+            var authoring = (OnTwosAuthoring)target;
 
             EditorGUILayout.LabelField("CrunchyRagdoll Authoring", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
@@ -101,7 +101,7 @@ namespace CrunchyRagdoll.Editor
                 else
                     EditorGUILayout.HelpBox(issue, MessageType.Warning);
 
-                bool hasRagdoll = CrunchyRagdollAutoBinder.HasRagdoll(authoring.RagdollRoot ?? authoring.transform);
+                bool hasRagdoll = OnTwosAutoBinder.HasRagdoll(authoring.RagdollRoot ?? authoring.transform);
                 EditorGUILayout.LabelField("Detected ragdoll joints:", hasRagdoll ? "Yes" : "No");
                 EditorGUI.indentLevel--;
             }

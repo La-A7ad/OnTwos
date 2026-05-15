@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Math
+namespace OnTwos.Runtime.Math
 {
     /// <summary>
     /// Manages a rolling window of bone transform samples and provides

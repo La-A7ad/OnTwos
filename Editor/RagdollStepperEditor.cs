@@ -1,8 +1,8 @@
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor
+namespace OnTwos.Editor
 {
     [CustomEditor(typeof(RagdollStepper))]
     public sealed class RagdollStepperEditor : UnityEditor.Editor
@@ -80,7 +80,7 @@ namespace CrunchyRagdoll.Editor
                 {
                     EditorGUILayout.HelpBox(
                         "The proxy is built on Start(). Inspect the scene hierarchy at runtime " +
-                        "for a sibling GameObject named '[CrunchProxy]'.",
+                        "for a sibling GameObject named '[OnTwosProxy]'.",
                         MessageType.Info);
                 }
                 else

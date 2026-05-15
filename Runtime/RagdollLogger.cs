@@ -1,8 +1,8 @@
 using System.Text;
-using CrunchyRagdoll.Runtime.Utilities;
+using OnTwos.Runtime.Utilities;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime
+namespace OnTwos.Runtime
 {
     /// <summary>
     /// Diagnostic logger attached alongside RagdollStepper. Captures the data
@@ -16,7 +16,7 @@ namespace CrunchyRagdoll.Runtime
     /// every LogInterval seconds and generates verbose log output.
     /// </summary>
     [AddComponentMenu("CrunchyRagdoll/Ragdoll Logger")]
-    public sealed class RagdollLogger : MonoBehaviour, ICrunchyComponent
+    public sealed class RagdollLogger : MonoBehaviour, IOnTwosComponent
     {
         [Tooltip("How often to emit a velocity sample line (seconds).")]
         public float LogInterval = 0.1f;

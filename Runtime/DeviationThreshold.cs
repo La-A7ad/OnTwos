@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace CrunchyRagdoll.Runtime.Math
+namespace OnTwos.Runtime.Math
 {
     /// <summary>
     /// Deviation-threshold walker — the "stepping" mechanic itself.

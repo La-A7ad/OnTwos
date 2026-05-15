@@ -1,8 +1,8 @@
 using UnityEditor;
 using UnityEngine;
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 
-namespace CrunchyRagdoll.Editor.Windows
+namespace OnTwos.Editor.Windows
 {
     /// <summary>
     /// EditorWindow for offline-baking an <see cref="AnimationClip"/> through the
@@ -15,7 +15,7 @@ namespace CrunchyRagdoll.Editor.Windows
     public sealed class CrunchyRagdollBakeWindow : EditorWindow
     {
         private AnimationClip _sourceClip;
-        private CrunchyRagdollProfile _profile;
+        private OnTwosProfile _profile;
         private string _outputPath = "Assets/BakedClips";
 
         [MenuItem("Window/CrunchyRagdoll/Bake Clip (preview)")]
@@ -43,8 +43,8 @@ namespace CrunchyRagdoll.Editor.Windows
             _sourceClip = (AnimationClip)EditorGUILayout.ObjectField(
                 "Source Clip", _sourceClip, typeof(AnimationClip), false);
 
-            _profile = (CrunchyRagdollProfile)EditorGUILayout.ObjectField(
-                "Profile", _profile, typeof(CrunchyRagdollProfile), false);
+            _profile = (OnTwosProfile)EditorGUILayout.ObjectField(
+                "Profile", _profile, typeof(OnTwosProfile), false);
 
             _outputPath = EditorGUILayout.TextField("Output Folder", _outputPath);
 

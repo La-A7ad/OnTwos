@@ -1,15 +1,15 @@
-using CrunchyRagdoll.Runtime.Math;
-using CrunchyRagdoll.Runtime.Utilities;
+using OnTwos.Runtime.Math;
+using OnTwos.Runtime.Utilities;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime
+namespace OnTwos.Runtime
 {
     /// <summary>
     /// Reads animator-driven bone rotations each LateUpdate, feeds them through
     /// the PCHIP + arc-length hold scheduler, and writes back the stepped pose.
     ///
     /// Detached from any specific game's enemy lifecycle: attach this directly
-    /// to a rig root, or let CrunchyRagdollAuthoring add it on Awake.
+    /// to a rig root, or let OnTwosAuthoring add it on Awake.
     ///
     /// Notes vs an earlier higher-tau version:
     ///   - Default tau lowered to 5° — reduces foot/ground clipping and gives the
@@ -23,12 +23,12 @@ namespace CrunchyRagdoll.Runtime
     ///     wrong direction when the new state fires.
     /// </summary>
     [AddComponentMenu("CrunchyRagdoll/Animation Stepper")]
-    public sealed class AnimationStepper : MonoBehaviour, ICrunchyComponent
+    public sealed class AnimationStepper : MonoBehaviour, IOnTwosComponent
     {
         [Tooltip("Optional profile. If set, Tau / CandidatesPerSegment / ExcludeKeywords " +
                  "are read live from this every frame; the local fields are used as " +
                  "fallback when no profile is assigned.")]
-        public CrunchyRagdollProfile Profile;
+        public OnTwosProfile Profile;
 
         [Tooltip("Where to start searching for bones. Falls back to this transform.")]
         public Transform BoneRoot;

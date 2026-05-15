@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Utilities
+namespace OnTwos.Runtime.Utilities
 {
     /// <summary>
     /// Caches the "root → leaf" name path for every transform under a given root,

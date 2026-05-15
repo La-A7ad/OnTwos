@@ -1,10 +1,10 @@
-using CrunchyRagdoll.Runtime;
+using OnTwos.Runtime;
 using UnityEditor;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Editor.Drawers
+namespace OnTwos.Editor.Drawers
 {
-    [CustomPropertyDrawer(typeof(CrunchyRagdollProfile.BoneOverride))]
+    [CustomPropertyDrawer(typeof(OnTwosProfile.BoneOverride))]
     public sealed class BoneOverrideDrawer : PropertyDrawer
     {
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)

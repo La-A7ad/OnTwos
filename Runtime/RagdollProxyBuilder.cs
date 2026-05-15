@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace CrunchyRagdoll.Runtime.Utilities
+namespace OnTwos.Runtime.Utilities
 {
     /// <summary>
     /// Builds and configures the visual proxy GameObject used by RagdollStepper.
@@ -38,7 +38,7 @@ namespace CrunchyRagdoll.Runtime.Utilities
         public static BuildResult Build(GameObject source,
                                         bool stripComponents,
                                         bool forceEnableRenderers,
-                                        string proxyNameSuffix = " [CrunchProxy]")
+                                        string proxyNameSuffix = " [OnTwosProxy]")
         {
             BuildResult result = default;
             if (source == null) return result;
@@ -54,7 +54,7 @@ namespace CrunchyRagdoll.Runtime.Utilities
             // recursion (mitigated only by Destroy()'s end-of-frame timing, but a
             // few-frame cascade is still possible). DestroyImmediate on an inactive
             // object is safe and has no frame-ordering side effects.
-            DestroyImmediateAllOfType<MonoBehaviour>(clone, m => m is ICrunchyComponent);
+            DestroyImmediateAllOfType<MonoBehaviour>(clone, m => m is IOnTwosComponent);
 
             if (stripComponents)
                 StripToRenderersOnly(clone);
@@ -182,5 +182,5 @@ namespace CrunchyRagdoll.Runtime.Utilities
     /// RagdollProxyBuilder can identify and destroy them on a clone before
     /// they re-Awake and spawn their own proxies.
     /// </summary>
-    public interface ICrunchyComponent { }
+    public interface IOnTwosComponent { }
 }
