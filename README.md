@@ -2,18 +2,24 @@
 
 Stop-motion / stepped animation in Unity.
 A self-contained asset implementing PCHIP-based motion quantization for
-animator-driven rigs and physics ragdolls.
+animator-driven rigs, procedural rigs, and physics ragdolls.
 
-The idea: sample the underlying continuous motion (animator output or rigidbody
-trajectory), fit it with monotone cubic splines, and replay it in **stepped frames**
-chosen by an arc-length-weighted deviation threshold. The result reads as
-hand-animated stop-motion rather than smooth linear interpolation.
+The idea: sample the underlying continuous motion (animator output, any
+bone-driving system, or rigidbody trajectory), fit it with monotone cubic
+splines, and replay it in **stepped frames** chosen by an arc-length-weighted
+deviation threshold. The result reads as hand-animated stop-motion rather than
+smooth linear interpolation.
 
 ## What you get
 
-- **`AnimationStepper`** — applies the stepping to a live `Animator`-driven rig.
-  The animator keeps running normally; the stepper just visually quantizes the
-  output bones each frame.
+- **`AnimationStepper`** — applies stepping to any bone hierarchy each frame.
+  Two modes:
+  - **`AnimatorDriven`** (default) — reads Animator output. Detects state
+    transitions and flushes held poses automatically so new states start clean.
+  - **`AnySource`** — reads whatever `localRotation` the bones have each frame.
+    No Animator required. Works with IK rigs, script-driven bones, cloth
+    results baked to transforms, motion matching, audio-reactive bones, or
+    anything else that writes to bone transforms directly.
 - **`RagdollStepper`** — snapshots a physics ragdoll, builds a transform-only
   visual proxy, hides the source, and replays the snapshot stream in stepped
   frames. Settles when motion drops below threshold; wakes if hit again.
@@ -23,10 +29,10 @@ hand-animated stop-motion rather than smooth linear interpolation.
 - **`RagdollStepper`** — exposes `OnSettled` and `OnWoke` C# events so you
   can hook dissolves, despawns, prop swaps, or re-enable interactions without
   polling. `IsSettled` and `VisualProxy` are also public properties.
-- **`OnTwosAuthoring`** — single MonoBehaviour entry point. Call `ActivateRagdoll()`
-  from your own code to switch from animator-driven to physics-driven stepped motion.
-  Call `Deactivate()` to reverse the transition (get-up, revival, stagger recovery).
-  `GoLimp()` is still present but deprecated — prefer `ActivateRagdoll()`.
+- **`OnTwosAuthoring`** — single MonoBehaviour entry point. Call
+  `ActivateRagdoll()` from your own code to switch from animator-driven to
+  physics-driven stepped motion. Call `Deactivate()` to reverse the transition
+  (get-up, revival, stagger recovery).
 
 ## Install
 
@@ -40,18 +46,24 @@ Unity 2021.3 LTS and newer should work. Unity 6 is supported — the runtime use
 
 ## Quick start
 
-1. `Assets → Create → OnTwos → Profile` to make a profile asset.
-2. Add `OnTwosAuthoring` to a humanoid character GameObject.
+1. `Assets → Create → CrunchyRagdoll → Profile` to make a profile asset.
+2. Add `OnTwosAuthoring` to a character GameObject.
 3. Drag the profile onto the authoring's `Profile` slot.
 4. `AnimationStepper` is added automatically on Awake when `AutoBindOnAwake`
    is true (the default). You only need to add it manually if you have turned
-   `AutoBindOnAwake` off. `RagdollStepper` is likewise created automatically
-   the first time `GoLimp()` is called when `AutoCreateProxy` is true.
+   `AutoBindOnAwake` off. `RagdollStepper` is created automatically the first
+   time `ActivateRagdoll()` is called when `AutoCreateProxy` is true.
 5. For physics-driven motion: call `GetComponent<OnTwosAuthoring>().ActivateRagdoll()`
-   from your own code. You can also right-click the `OnTwosAuthoring` component in
-   the Inspector during Play Mode and choose **ActivateRagdoll (Test)** to trigger
-   it without writing any code.
+   from your own code, or use the **Activate Ragdoll** button in the Inspector
+   during Play Mode.
 6. To reverse it (get-up, revival): call `GetComponent<OnTwosAuthoring>().Deactivate()`.
+
+## Non-Animator rigs (IK, procedural, script-driven)
+
+Set `AnimationStepper.Mode` to `AnySource`. The stepper reads whatever
+`localRotation` the bones have each `LateUpdate` — no Animator needed. Call
+`FlushAllHolds()` manually if your source system has discrete states and you
+want to prevent cross-state pose ghosting.
 
 ## Folder layout
 
@@ -65,12 +77,9 @@ OnTwos/
 ## Caveats
 
 - **Demo prefabs are not pre-authored.** `Samples~/` contains a step-by-step
-  README. Setting up the two demo prefabs manually takes about two minutes and
+  README. Setting up the demo prefabs manually takes about two minutes and
   produces something more reliable than auto-generated YAML referencing
   imported humanoid rigs.
-- **Offline clip baking is a stub.** `OnTwosBakeWindow` exposes the API
-  surface for baking stepped `AnimationClip` assets at edit time, but the bake
-  itself is not yet implemented. The runtime path is the priority.
 - **Visual proxy is mandatory for the ragdoll path.** Writing `localRotation`
   directly to non-kinematic bone Rigidbodies causes CharacterJoint constraint
   error to accumulate, and the bodies drift sideways under gravity. The
@@ -81,7 +90,7 @@ OnTwos/
 
 For each tracked bone, every frame:
 
-1. Sample the source value (rotation / position / animator pose).
+1. Sample the source value (rotation / position / animator pose / any source).
 2. Append to a `MonotoneCubicSampler` rolling buffer; fit a Fritsch-Carlson PCHIP
    spline over the recent window.
 3. Walk the spline forward using `DeviationThreshold` — emit a new "snap" when
@@ -91,10 +100,9 @@ For each tracked bone, every frame:
    MaxHoldFrames]` so you never get sub-frame jitter or completely frozen output.
 5. Apply the chosen snap pose to the visible bones; everything else holds.
 
-For ragdolls, the snapshot capture writes positions and orientations of every
-tracked rigidbody into a circular buffer, and the proxy applies stepped frames
-from that buffer instead of from a fitted spline — physics drives the motion,
-the stepper just visually quantizes it.
+For ragdolls, samples come from `Rigidbody` world transforms rather than
+Animator output, and stepped poses are written to the visual proxy rather than
+the source bones.
 
 ## License
 
@@ -130,5 +138,5 @@ SOFTWARE.
 ## Where to look
 
 - Profile inspector: open any `OnTwosProfile` asset.
-- Live telemetry: `Window → OnTwos → Preview` (during Play Mode).
+- Live telemetry: `Window → CrunchyRagdoll → Preview` (during Play Mode).
 - Per-component foldouts: select an authoring or stepper in the scene.

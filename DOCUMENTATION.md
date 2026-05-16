@@ -14,7 +14,7 @@
 10. [Tuning guide](#10-tuning-guide)
 11. [Events and callbacks](#11-events-and-callbacks)
 12. [Editor tools](#12-editor-tools)
-13. [Use-case recipes](#13-use-case-recipes)
+13. [Use-case recipes](#13-use-case-recipes) (A–I)
 14. [Caveats](#14-caveats)
 
 ---
@@ -30,7 +30,7 @@ Two independent components handle the two common sources of motion:
 
 | Component | Source of motion | Works on |
 |---|---|---|
-| `AnimationStepper` | Unity `Animator` | Any `Animator`-driven bone hierarchy |
+| `AnimationStepper` | Unity `Animator` **or any bone-driving system** | Animator-driven rigs (default), IK rigs, script-driven bones, cloth, motion matching — anything that writes to bone transforms |
 | `RagdollStepper` | Unity `Rigidbody` | Any object with Rigidbody components — joint ragdolls, free rigid bodies, compound colliders, dropped props, vehicles, debris |
 
 Both use the same underlying pipeline: PCHIP spline fitting over a rolling
@@ -161,6 +161,7 @@ Consumed by `AnimationStepper`.
 | Field | Default | Description |
 |---|---|---|
 | `AnimTau` | `5` | Degrees of rotation before a new snap. See [τ](#τ-tau--the-crunchiness-threshold). |
+| `PositionTau` | `0` | Metres of translation before a stepped position snaps. `0` = position stepping disabled (rotation only). Used by the bake window to write `localPosition` curves when set above 0. Runtime position stepping for `AnimationStepper` is a planned feature — set this in the profile to prepare for it. |
 | `GaussPoints` | `2` | Arc-length hold candidates per monotone segment. Raise to 3–4 for more expressive snaps on fast motion. |
 | `BufferSize` | `30` | Rolling sample window per bone (~0.5 s at 60 Hz). |
 | `ExcludeKeywords` | *(empty)* | Bones whose names contain any of these substrings are skipped entirely. Case-insensitive. |
@@ -209,23 +210,66 @@ object — the term refers to the stepping technique, not a specific rig type.
 
 ## 6. AnimationStepper
 
-Applies stepped poses to an `Animator`-driven hierarchy each `LateUpdate`.
-The Animator keeps running normally; the stepper intercepts bone transforms
-and quantises them to the last held snap.
+Reads bone rotations each `LateUpdate`, feeds them through the PCHIP + arc-length
+hold scheduler, and writes back the stepped pose.
 
-### Setup
+### Mode
+
+The `Mode` field controls how bones are read:
+
+| Mode | Requires | State flushing |
+|---|---|---|
+| `AnimatorDriven` *(default)* | An `Animator` in the hierarchy | Automatic — `AnimatorStateWatcher` detects transitions and calls `FlushAllHolds()` |
+| `AnySource` | Nothing — reads whatever `localRotation` bones have each frame | Manual — call `FlushAllHolds()` yourself if your source has discrete states |
+
+`AnySource` makes `AnimationStepper` work with IK rigs, script-driven bones,
+cloth results baked to transforms, motion matching output, or any system that
+writes to bone transforms directly. The `AnimatorRoot` field is ignored when
+`AnySource` is set.
+
+### Setup — AnimatorDriven
 
 ```csharp
 var s          = gameObject.AddComponent<AnimationStepper>();
 s.Profile      = profile;
-s.AnimatorRoot = GetComponentInChildren<Animator>();
-s.BoneRoot     = boneHierarchyRoot; // any Transform that is a parent of all bones
+s.AnimatorRoot = GetComponentInChildren<Animator>(); // auto-discovered if null
+s.BoneRoot     = boneHierarchyRoot;
 ```
+
+### Setup — AnySource
+
+```csharp
+var s     = gameObject.AddComponent<AnimationStepper>();
+s.Mode    = AnimationStepper.StepperMode.AnySource;
+s.Profile = profile;
+s.BoneRoot = boneHierarchyRoot;
+// No Animator needed. Reads localRotation from whatever drives the bones.
+```
+
+### Visibility culling
+
+```csharp
+s.EnableVisibilityCulling = true;
+```
+
+When enabled, the `localRotation` write-back is skipped while every `Renderer`
+in the bone hierarchy is off-screen. The schedulers keep running (bones are still
+read each frame) so state stays coherent — no visible pop when the rig comes back
+on screen. Leave disabled if the hierarchy has no `Renderer` components.
 
 ### Deactivating
 
 ```csharp
-stepper.Deactivate(); // restores continuous poses; component stays in place
+stepper.Deactivate(); // disables the component; continuous poses resume
+```
+
+### Manual flush
+
+```csharp
+// Call this when your source system makes a large discontinuous jump
+// (mode switch, teleport, IK target swap) to prevent ghosting of the
+// old pose into the new one.
+stepper.FlushAllHolds();
 ```
 
 ### Notes
@@ -235,6 +279,9 @@ stepper.Deactivate(); // restores continuous poses; component stays in place
   picked up automatically.
 - Live `AnimTau` slider changes are pushed to schedulers each frame.
   `ExcludeKeywords` and `BoneOverrides` changes are not hot-reloaded.
+- In `AnimatorDriven` mode, if no `Animator` is found in the hierarchy a warning
+  is logged and state-transition flushing is disabled for that instance.
+  The stepper still runs — just without automatic flush on state changes.
 
 ---
 
@@ -285,6 +332,18 @@ main thread from `FixedUpdate`, so Unity API calls from handlers are safe.
 bool      IsSettled  { get; }  // true after settle, false after wake
 GameObject VisualProxy { get; } // the transform-only clone
 ```
+
+### Visibility culling
+
+```csharp
+stepper.EnableVisibilityCulling = true;
+```
+
+When enabled, `ApplyHeldPoses()` is skipped while every `Renderer` on the
+visual proxy is off-screen. The PCHIP schedulers keep running in `FixedUpdate`
+so state stays coherent — no visible pop when the proxy comes back into view.
+Recommended for scenes with large numbers of simultaneous active ragdolls.
+Default is `false` so existing scenes behave identically without opt-in.
 
 Use `VisualProxy` to reparent, attach effects, or destroy the visual
 independently of the physics object:
@@ -482,8 +541,27 @@ inline validation warnings (e.g. `MaxHoldFrames < MinHoldFrames`).
 
 ### Bake window
 
-`Window → CrunchyRagdoll → Bake Clip (not yet implemented)` is a placeholder
-for a future offline pipeline. The runtime path is the current workflow.
+`Window → CrunchyRagdoll → Bake Clip`:
+
+Samples a source `AnimationClip` through the full OnTwos stepping pipeline and
+saves the result as a new `.anim` asset. The output clip has constant-interpolation
+(`step`) keyframes and can play back in any `Animator` without the OnTwos runtime
+system present — useful for shipping builds or export.
+
+Fields:
+
+| Field | Description |
+|---|---|
+| **Source Clip** | The `AnimationClip` to bake. |
+| **Skeleton Object** | A scene instance of the rig with an `Animator`. Drag from the Hierarchy, not the Project. |
+| **Profile** | Reads `AnimTau`, `GaussPoints`, `BufferSize`, `ExcludeKeywords`, and `PositionTau`. |
+| **Output Folder** | Project-relative path where the `.anim` is saved. |
+| **Tau Over Time** | An `AnimationCurve` (X = normalised clip time 0..1, Y = τ multiplier). Default flat 1.0 leaves the bake identical to a plain τ bake. Sculpt the curve to make specific moments crunchier or smoother — a spike at an impact frame, a ramp out of a landing. |
+
+When `Profile.LiveAnimation.PositionTau > 0`, the bake also writes
+`localPosition` curves with the same snap coupling used by `RagdollStepper` at
+runtime: the position snaps when the rotation scheduler snaps, or when
+translation drift exceeds `PositionTau` metres — whichever comes first.
 
 ---
 
@@ -545,21 +623,41 @@ IEnumerator KnockDown(float duration)
 
 ---
 
-### E. Non-humanoid or procedural rig
+### E. IK or procedurally driven rig — AnySource mode
+
+Use this for any rig whose bones are driven by something other than an Animator:
+full-body IK, a custom script, cloth baked to transforms, motion matching, etc.
 
 ```csharp
-// Works on any rig — creature, vehicle, mechanical arm, custom hierarchy.
+var s     = gameObject.AddComponent<AnimationStepper>();
+s.Mode    = AnimationStepper.StepperMode.AnySource;
+s.Profile = profile;
+s.BoneRoot = rootBone;
+// No Animator required. The stepper reads localRotation from whatever drives
+// the bones each frame — IK, script, cloth, or anything else.
+
+// If your IK system has discrete state changes (e.g. switching targets),
+// call this to prevent the old pose ghosting into the new one:
+// s.FlushAllHolds();
+```
+
+---
+
+### F. Non-humanoid Animator rig (creature, vehicle, mechanical arm)
+
+```csharp
+// Works on any Animator-driven hierarchy.
 // Set ExcludeKeywords to whatever end-effectors your rig has.
 // Leave it empty to step every bone.
 var s          = gameObject.AddComponent<AnimationStepper>();
 s.Profile      = profile;
 s.AnimatorRoot = GetComponentInChildren<Animator>();
-s.BoneRoot     = rootBone; // whatever is the root of your driven hierarchy
+s.BoneRoot     = rootBone;
 ```
 
 ---
 
-### F. Physics chain — a hanging lamp, a rope, debris
+### G. Physics chain — a hanging lamp, a rope, debris
 
 ```csharp
 // Any number of connected Rigidbodies. PhysicsRoot auto-finds the common ancestor.
@@ -571,7 +669,7 @@ s.PhysicsRoot = transform;
 
 ---
 
-### G. Access and control the visual proxy
+### H. Access and control the visual proxy
 
 ```csharp
 var stepper = GetComponent<RagdollStepper>();
@@ -589,7 +687,7 @@ stepper.OnSettled += () =>
 
 ---
 
-### H. Swap profiles at runtime
+### I. Swap profiles at runtime
 
 ```csharp
 // Change the crunch feel without rebuilding anything.
