@@ -50,6 +50,11 @@ namespace OnTwos.Runtime
         // Inspector fields
         // -----------------------------------------------------------------
 
+        [Tooltip("Which Animator layer to watch for state transitions. 0 = base layer. " +
+         "Increase if your transitions that matter happen on a higher layer.")]
+        [Range(0, 7)]
+        public int AnimatorLayerIndex = 0;
+
         [Tooltip("AnimatorDriven: reads Animator output and auto-flushes on state transitions. " +
                  "Requires an Animator in the hierarchy.\n\n" +
                  "AnySource: reads whatever localRotation the bones have each frame. " +
@@ -118,7 +123,7 @@ namespace OnTwos.Runtime
 
                 if (AnimatorRoot != null)
                 {
-                    _stateWatcher = new AnimatorStateWatcher(AnimatorRoot);
+                    _stateWatcher = new AnimatorStateWatcher(AnimatorRoot, AnimatorLayerIndex);
                 }
                 else
                 {

@@ -119,27 +119,27 @@ namespace OnTwos.Runtime.Utilities
         /// their Start callbacks when SetActive(true) fires.
         /// </summary>
         private static void StripToRenderersOnly(GameObject root)
-        {
-            Joint[] joints = root.GetComponentsInChildren<Joint>(true);
-            for (int i = 0; i < joints.Length; i++)
-                if (joints[i] != null) Object.Destroy(joints[i]);
+{
+    Joint[] joints = root.GetComponentsInChildren<Joint>(true);
+    for (int i = 0; i < joints.Length; i++)
+        if (joints[i] != null) Object.DestroyImmediate(joints[i]);
 
-            Rigidbody[] rigidbodies = root.GetComponentsInChildren<Rigidbody>(true);
-            for (int i = 0; i < rigidbodies.Length; i++)
-                if (rigidbodies[i] != null) Object.Destroy(rigidbodies[i]);
+    Rigidbody[] rigidbodies = root.GetComponentsInChildren<Rigidbody>(true);
+    for (int i = 0; i < rigidbodies.Length; i++)
+        if (rigidbodies[i] != null) Object.DestroyImmediate(rigidbodies[i]);
 
-            Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
-            for (int i = 0; i < colliders.Length; i++)
-                if (colliders[i] != null) Object.Destroy(colliders[i]);
+    Collider[] colliders = root.GetComponentsInChildren<Collider>(true);
+    for (int i = 0; i < colliders.Length; i++)
+        if (colliders[i] != null) Object.DestroyImmediate(colliders[i]);
 
-            MonoBehaviour[] behaviours = root.GetComponentsInChildren<MonoBehaviour>(true);
-            for (int i = 0; i < behaviours.Length; i++)
-                if (behaviours[i] != null) Object.DestroyImmediate(behaviours[i]);
+    MonoBehaviour[] behaviours = root.GetComponentsInChildren<MonoBehaviour>(true);
+    for (int i = 0; i < behaviours.Length; i++)
+        if (behaviours[i] != null) Object.DestroyImmediate(behaviours[i]);
 
-            Animator[] animators = root.GetComponentsInChildren<Animator>(true);
-            for (int i = 0; i < animators.Length; i++)
-                if (animators[i] != null) Object.DestroyImmediate(animators[i]);
-        }
+    Animator[] animators = root.GetComponentsInChildren<Animator>(true);
+    for (int i = 0; i < animators.Length; i++)
+        if (animators[i] != null) Object.DestroyImmediate(animators[i]);
+}
 
         private static void DestroyImmediateAllOfType<T>(GameObject root, System.Predicate<T> match)
             where T : Component

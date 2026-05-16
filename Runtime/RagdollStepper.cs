@@ -116,46 +116,42 @@ namespace OnTwos.Runtime
         // ------------------------------------------------------------------ lifecycle
 
         private void Start()
-        {
-            _startTime      = Time.fixedTime;
-            _sourceAnimator = GetComponentInChildren<Animator>(true);
+{
+    _startTime      = Time.fixedTime;
+    _sourceAnimator = GetComponentInChildren<Animator>(true);
 
-            BuildVisualProxy();   // must be first — Instantiate copies component state
+    BuildVisualProxy();   // now also populates _sourceBodies and _visualBones
 
-            // Cache the proxy's renderer set for visibility culling. Done immediately
-            // after the proxy is built (and before any source renderers are disabled)
-            // so we capture exactly the renderers the user will see at runtime.
-            if (_visualProxyRoot != null)
-                _proxyRenderers = _visualProxyRoot.GetComponentsInChildren<Renderer>(true);
+    if (_visualProxyRoot != null)
+        _proxyRenderers = _visualProxyRoot.GetComponentsInChildren<Renderer>(true);
 
-            if (_sourceAnimator != null)
-                _sourceAnimator.enabled = false;
+    if (_sourceAnimator != null)
+        _sourceAnimator.enabled = false;
 
-            if (HideSourceRenderers)
-            {
-                _sourceRenderers = GetComponentsInChildren<Renderer>(true);
-                for (int i = 0; i < _sourceRenderers.Length; i++)
-                    if (_sourceRenderers[i] != null)
-                        _sourceRenderers[i].enabled = false;
-            }
+    if (HideSourceRenderers)
+    {
+        _sourceRenderers = GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < _sourceRenderers.Length; i++)
+            if (_sourceRenderers[i] != null)
+                _sourceRenderers[i].enabled = false;
+    }
 
-            CacheTrackedBodiesAndBones();
+    // _sourceBodies and _visualBones already set by BuildVisualProxy()
+    if (_sourceBodies == null || _sourceBodies.Length == 0 ||
+        _visualBones  == null || _visualBones.Length  == 0)
+    {
+        Debug.LogWarning($"[RagdollStepper] {gameObject.name} — no tracked ragdoll bodies found.");
+        enabled = false;
+        return;
+    }
 
-            if (_sourceBodies == null || _sourceBodies.Length == 0 ||
-                _visualBones  == null || _visualBones.Length  == 0)
-            {
-                Debug.LogWarning($"[RagdollStepper] {gameObject.name} — no tracked ragdoll bodies found.");
-                enabled = false;
-                return;
-            }
+    _anchorIndex = RagdollProxyBuilder.PickAnchorIndex(_sourceBodies);
+    InitSchedulers();
 
-            _anchorIndex = PickAnchorIndex(_sourceBodies);
-            InitSchedulers();
-
-            Debug.Log(
-                $"[RagdollStepper] {gameObject.name} — {_sourceBodies.Length} tracked bones, " +
-                $"PCHIP pipeline active (τ={Tau}°)");
-        }
+    Debug.Log(
+        $"[RagdollStepper] {gameObject.name} — {_sourceBodies.Length} tracked bones, " +
+        $"PCHIP pipeline active (τ={ResolveTau()}°)");
+}
 
         private void InitSchedulers()
         {
@@ -182,6 +178,7 @@ namespace OnTwos.Runtime
             }
         }
 
+
         // ------------------------------------------------------------------ update
 
         private void FixedUpdate()
@@ -193,8 +190,8 @@ namespace OnTwos.Runtime
             if (_sourceBodies.Length == 0) return;
 
             float t      = Time.fixedTime;
-            float liveTau = Profile.Ragdoll.RagdollTau;
-            float posTau  = Profile.Ragdoll.RagdollPosTau;
+            float liveTau = Profile != null ? Profile.Ragdoll.RagdollTau : Tau;
+            float posTau  = Profile != null ? Profile.Ragdoll.RagdollPosTau : PositionTau; //Null checks 
 
             if (!_initialized)
             {
@@ -305,123 +302,70 @@ namespace OnTwos.Runtime
         }
 
         // ------------------------------------------------------------------ settle
-
         private void UpdateSettleState()
+{
+    if (AllBonesStill())
+    {
+        _settleTimer += Time.fixedDeltaTime;
+        if (_settleTimer >= ResolveSettleTime())
         {
-            if (AllBonesStill())
-            {
-                _settleTimer += Time.fixedDeltaTime;
-                if (_settleTimer >= SettleTime)
-                {
-                    _settled = true;
-                    Debug.Log($"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
-                    OnSettled?.Invoke();
-                }
-            }
-            else
-            {
-                _settleTimer = 0f;
-            }
+            _settled = true;
+            Debug.Log($"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
+            OnSettled?.Invoke();
         }
+    }
+    else
+    {
+        _settleTimer = 0f;
+    }
+}
 
-        private bool AllBonesStill()
-        {
-            for (int i = 0; i < _sourceBodies.Length; i++)
-            {
-                Rigidbody rb = _sourceBodies[i];
-                if (rb == null) continue;
+private bool AllBonesStill()
+{
+    for (int i = 0; i < _sourceBodies.Length; i++)
+    {
+        Rigidbody rb = _sourceBodies[i];
+        if (rb == null) continue;
 #if UNITY_6000_0_OR_NEWER
-                float linSpeed = rb.linearVelocity.magnitude;
+        float linSpeed = rb.linearVelocity.magnitude;
 #else
-                float linSpeed = rb.velocity.magnitude;
+        float linSpeed = rb.velocity.magnitude;
 #endif
-                if (linSpeed > SettleVelocityThreshold ||
-                    rb.angularVelocity.magnitude * Mathf.Rad2Deg > SettleAngularThreshold)
-                    return false;
-            }
-            return true;
-        }
+        if (linSpeed > ResolveSettleVelocity() ||
+            rb.angularVelocity.magnitude * Mathf.Rad2Deg > ResolveSettleAngular())
+            return false;
+    }
+    return true;
+}
 
-        private bool AnchorWoke()
-        {
-            if (_anchorIndex >= _sourceBodies.Length) return false;
-            Rigidbody rb = _sourceBodies[_anchorIndex];
-            if (rb == null) return false;
+private bool AnchorWoke()
+{
+    if (_anchorIndex >= _sourceBodies.Length) return false;
+    Rigidbody rb = _sourceBodies[_anchorIndex];
+    if (rb == null) return false;
 #if UNITY_6000_0_OR_NEWER
-            float linSpeed = rb.linearVelocity.magnitude;
+    float linSpeed = rb.linearVelocity.magnitude;
 #else
-            float linSpeed = rb.velocity.magnitude;
+    float linSpeed = rb.velocity.magnitude;
 #endif
-            return linSpeed >= WakeVelocityThreshold ||
-                   rb.angularVelocity.magnitude * Mathf.Rad2Deg >= WakeVelocityThreshold * 6f;
-        }
-
+    float wakeVel = ResolveWakeVelocity();
+    return linSpeed >= wakeVel ||
+           rb.angularVelocity.magnitude * Mathf.Rad2Deg >= wakeVel * 6f;
+}
         // ------------------------------------------------------------------ proxy build
 
         private void BuildVisualProxy()
-        {
-            GameObject clone = Instantiate(gameObject, transform.position, transform.rotation, null);
-            clone.name = gameObject.name + " [OnTwosProxy]";
-            clone.SetActive(false);
+{
+    var result = RagdollProxyBuilder.Build(
+        gameObject,
+        stripComponents:      StripProxyComponents,
+        forceEnableRenderers: true
+    );
 
-            // Kill our own components before SetActive(true) — DestroyImmediate is safe
-            // on inactive objects and prevents the clone spawning its own proxy.
-            foreach (var c in clone.GetComponentsInChildren<RagdollStepper>(true))
-                if (c != null) DestroyImmediate(c);
-            foreach (var c in clone.GetComponentsInChildren<RagdollLogger>(true))
-                if (c != null) DestroyImmediate(c);
-            foreach (var c in clone.GetComponentsInChildren<AnimationStepper>(true))
-                if (c != null) DestroyImmediate(c);
-
-            if (StripProxyComponents)
-                StripToRenderersOnly(clone);
-
-            clone.SetActive(true);
-
-            foreach (var r in clone.GetComponentsInChildren<Renderer>(true))
-            {
-                r.enabled = true;
-                if (r is SkinnedMeshRenderer smr)
-                    smr.updateWhenOffscreen = true;
-            }
-
-            _visualProxyRoot = clone;
-        }
-
-        private void CacheTrackedBodiesAndBones()
-        {
-            Rigidbody[] allBodies     = GetComponentsInChildren<Rigidbody>(true);
-            Transform   proxyRoot     = _visualProxyRoot.transform;
-            Transform[] proxyTransforms = _visualProxyRoot.GetComponentsInChildren<Transform>(true);
-
-            var proxyLookup = new Dictionary<string, Transform>(proxyTransforms.Length);
-            foreach (Transform t in proxyTransforms)
-            {
-                if (t == null) continue;
-                string path = GetPath(proxyRoot, t);
-                proxyLookup[path] = t;
-            }
-
-            var sourceList = new List<Rigidbody>(allBodies.Length);
-            var visualList = new List<Transform>(allBodies.Length);
-
-            foreach (Rigidbody rb in allBodies)
-            {
-                if (rb == null) continue;
-                string path = GetPath(transform, rb.transform);
-                if (!proxyLookup.TryGetValue(path, out Transform proxyBone) || proxyBone == null)
-                {
-                    Debug.LogWarning($"[RagdollStepper] Missing proxy match for '{path}'");
-                    continue;
-                }
-                sourceList.Add(rb);
-                visualList.Add(proxyBone);
-            }
-
-            _sourceBodies = sourceList.ToArray();
-            _visualBones  = visualList.ToArray();
-        }
-
+    _visualProxyRoot = result.Proxy;
+    _sourceBodies    = result.SourceBodies;
+    _visualBones     = result.VisualBones;
+}
         // ------------------------------------------------------------------ prune
 
         /// <summary>
@@ -501,20 +445,6 @@ namespace OnTwos.Runtime
             return current == null ? string.Empty : string.Join("/", stack.ToArray());
         }
 
-        private static void StripToRenderersOnly(GameObject root)
-        {
-            foreach (var j  in root.GetComponentsInChildren<Joint>(true))
-                if (j  != null) Destroy(j);
-            foreach (var rb in root.GetComponentsInChildren<Rigidbody>(true))
-                if (rb != null) Destroy(rb);
-            foreach (var c  in root.GetComponentsInChildren<Collider>(true))
-                if (c  != null) Destroy(c);
-            foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
-                if (mb != null) DestroyImmediate(mb);
-            foreach (var a  in root.GetComponentsInChildren<Animator>(true))
-                if (a  != null) DestroyImmediate(a);
-        }
-
         private static int PickAnchorIndex(Rigidbody[] bodies)
         {
             int best = 0;
@@ -544,5 +474,25 @@ namespace OnTwos.Runtime
                 foreach (var r in _sourceRenderers)
                     if (r != null) r.enabled = true;
         }
+
+        // ------------ RESOLVERS
+
+        private float ResolveTau()
+    => Profile != null ? Profile.Ragdoll.RagdollTau : Tau;
+
+private int ResolveCandidates()
+    => Profile != null ? Profile.Ragdoll.GaussPoints : 2;
+
+private float ResolveSettleVelocity()
+    => Profile != null ? Profile.Settling.SettleVelocityThreshold : SettleVelocityThreshold;
+
+private float ResolveSettleAngular()
+    => Profile != null ? Profile.Settling.SettleAngularThreshold : SettleAngularThreshold;
+
+private float ResolveSettleTime()
+    => Profile != null ? Profile.Settling.SettleTime : SettleTime;
+
+private float ResolveWakeVelocity()
+    => Profile != null ? Profile.Settling.WakeVelocityThreshold : WakeVelocityThreshold;
     }
 }

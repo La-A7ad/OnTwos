@@ -49,7 +49,7 @@ plays back in stepped frames, so the ragdoll tumble has stop-motion feel.
    to enable the ragdoll), then call:
 
    ```csharp
-   GetComponent<OnTwosAuthoring>().GoLimp();
+   GetComponent<OnTwosAuthoring>().ActivateRagdoll();
    ```
 
    That single call tells the `RagdollStepper` to build the visual proxy, hide the

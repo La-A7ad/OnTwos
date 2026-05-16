@@ -250,6 +250,17 @@ namespace OnTwos.Runtime.Math
             return _rots[idx];
         }
 
+        /// <summary>The timestamp of the oldest sample currently in the buffer.</summary>
+        public float OldestTime
+        {
+        get
+        {
+            if (Count == 0) return 0f;
+            int start = Count < _capacity ? 0 : _head;
+            return _times[start];
+            }
+}
+
         private static (float[], Quaternion[]) Deduplicate(float[] xs, Quaternion[] qs)
         {
             List<float> outX = new List<float>(xs.Length);

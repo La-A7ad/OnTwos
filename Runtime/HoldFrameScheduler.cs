@@ -129,15 +129,16 @@ namespace OnTwos.Runtime.Math
             }
 
             // Advance window — drop oldest portion to keep buffer fresh.
-            _windowStart = tStart + ((tEnd - tStart) * 0.1f);
+            _windowStart = _sampler.OldestTime;
 
-            return _held;
-        }
+            return _held; }
 
         public void Reset(Quaternion initialPose)
         {
-            _held = initialPose;
-            _windowStart = -1f;
+         _held = initialPose;
+         _windowStart = -1f;
+         _framesSinceExtremaScan = ExtremaInterval; // force rescan next Update
+         _cachedExtrema.Clear();
         }
     }
 }

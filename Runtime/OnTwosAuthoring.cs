@@ -97,6 +97,7 @@ namespace OnTwos.Runtime
             _animStepper.Profile      = Profile;
             _animStepper.AnimatorRoot = AnimatorRoot;
             _animStepper.BoneRoot     = BoneRoot;
+            _animStepper.enabled = true;
             return _animStepper;
         }
 
