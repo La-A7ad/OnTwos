@@ -58,8 +58,7 @@ namespace OnTwos.Runtime
         {
             AutoResolveBindings();
 
-            if (AutoBindOnAwake && Profile?.LiveAnimation != null)
-                AttachAnimationStepper();
+            AttachAnimationStepper();
         }
 
         /// <summary>
@@ -145,8 +144,7 @@ namespace OnTwos.Runtime
                 _ragdollStepper = null;
             }
 
-            if (AutoBindOnAwake && Profile?.LiveAnimation != null)
-                AttachAnimationStepper();
+            AttachAnimationStepper();
         }
 
         /// <summary>

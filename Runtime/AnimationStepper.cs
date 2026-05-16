@@ -92,6 +92,7 @@ namespace OnTwos.Runtime
 
         private Transform[]          _bones;
         private HoldFrameScheduler[] _schedulers;
+        private Quaternion[]         _rawRotations;
         private bool[]               _excluded;
         private float                _startTime;
         private bool                 _ready;
@@ -111,9 +112,10 @@ namespace OnTwos.Runtime
         private void Start()
         {
             Transform searchRoot = BoneRoot != null ? BoneRoot : transform;
-            _bones      = searchRoot.GetComponentsInChildren<Transform>(true);
-            _schedulers = new HoldFrameScheduler[_bones.Length];
-            _excluded   = new bool[_bones.Length];
+            _bones        = searchRoot.GetComponentsInChildren<Transform>(true);
+            _schedulers   = new HoldFrameScheduler[_bones.Length];
+            _rawRotations = new Quaternion[_bones.Length];
+            _excluded     = new bool[_bones.Length];
 
             // AnimatorStateWatcher is only meaningful in AnimatorDriven mode.
             if (Mode == StepperMode.AnimatorDriven)
@@ -138,15 +140,26 @@ namespace OnTwos.Runtime
             // Cache renderers once for optional per-frame visibility checks.
             _renderers = GetComponentsInChildren<Renderer>(true);
 
-            float        tau            = ResolveTau();
-            int          candidates     = ResolveCandidates();
-            Transform[]  excludeBones   = ResolveExcludeBones();
-            string[]     excludeKeywords = ResolveExcludeKeywords();
+            float       tau            = ResolveTau();
+            int         candidates     = ResolveCandidates();
+            int         bufferSize     = ResolveBufferSize();
+            Transform[] excludeBones   = ResolveExcludeBones();
+            string[]    excludeKeywords = ResolveExcludeKeywords();
+            OnTwosProfile.BoneOverride[] overrides = ResolveBoneOverrides();
 
             for (int i = 0; i < _bones.Length; i++)
             {
-                _excluded[i]   = BoneFilter.IsExcluded(_bones[i], excludeBones, excludeKeywords);
-                _schedulers[i] = _excluded[i] ? null : new HoldFrameScheduler(tau, candidates);
+                _excluded[i] = BoneFilter.IsExcluded(_bones[i], excludeBones, excludeKeywords, overrides);
+                if (_excluded[i])
+                {
+                    _schedulers[i] = null;
+                    continue;
+                }
+
+                float boneTau = ResolveTauForBone(_bones[i], tau, overrides);
+                _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
+                _schedulers[i].CandidatesPerSegment = candidates;
+                _rawRotations[i] = _bones[i].localRotation;
             }
 
             _startTime = Time.time;
@@ -164,8 +177,10 @@ namespace OnTwos.Runtime
             if (!_ready) return;
             if (Profile != null && !Profile.Global.Enabled) return;
 
-            float t       = Time.time - _startTime;
+            float t = Time.time - _startTime;
             float liveTau = ResolveTau();
+            int liveCandidates = ResolveCandidates();
+            var overrides = ResolveBoneOverrides();
 
             // The null check here handles both AnySource mode (_stateWatcher is never
             // created) and AnimatorDriven mode where no Animator was found at Start.
@@ -179,14 +194,27 @@ namespace OnTwos.Runtime
 
             for (int i = 0; i < _bones.Length; i++)
             {
-                if (_bones[i] == null || _excluded[i]) continue;
+                Transform bone = _bones[i];
+                if (bone == null || _excluded[i])
+                {
+                    if (bone != null)
+                        _rawRotations[i] = bone.localRotation;
+                    continue;
+                }
 
-                // Sync tau so live profile slider changes take effect immediately.
-                _schedulers[i].Tau = liveTau;
+                Quaternion raw = bone.localRotation;
+                float response = ResolveResponseMultiplier(ComputeMotionIntensity(i, raw));
+                float boneTau = ResolveTauForBone(bone, liveTau, overrides) * response;
+                int boneCandidates = Mathf.Clamp(Mathf.RoundToInt(liveCandidates * response), 1, 4);
 
-                Quaternion held = _schedulers[i].Update(t, _bones[i].localRotation);
+                // Sync tau / candidate density so live profile slider changes take effect immediately.
+                _schedulers[i].Tau = boneTau;
+                _schedulers[i].CandidatesPerSegment = boneCandidates;
+
+                Quaternion held = _schedulers[i].Update(t, raw);
+                _rawRotations[i] = raw;
                 if (!culled)
-                    _bones[i].localRotation = held;
+                    bone.localRotation = held;
             }
         }
 
@@ -205,6 +233,7 @@ namespace OnTwos.Runtime
             for (int i = 0; i < _bones.Length; i++)
             {
                 if (_bones[i] == null || _excluded[i]) continue;
+                _rawRotations[i] = _bones[i].localRotation;
                 _schedulers[i].Reset(_bones[i].localRotation);
             }
         }
@@ -239,8 +268,43 @@ namespace OnTwos.Runtime
         private int ResolveCandidates()
             => Profile != null ? Profile.LiveAnimation.GaussPoints : CandidatesPerSegment;
 
+        private int ResolveBufferSize()
+            => Profile != null ? Mathf.Max(4, Profile.LiveAnimation.BufferSize) : 30;
+
         private string[] ResolveExcludeKeywords()
             => Profile != null ? Profile.LiveAnimation.ExcludeKeywords : ExcludeKeywords;
+
+        private OnTwosProfile.BoneOverride[] ResolveBoneOverrides()
+            => Profile != null ? Profile.BoneOverrides : Array.Empty<OnTwosProfile.BoneOverride>();
+
+        private float ResolveTauForBone(Transform bone, float baseTau, OnTwosProfile.BoneOverride[] overrides)
+        {
+            float overrideTau = BoneFilter.GetTauOverride(bone, overrides);
+            return overrideTau > 0f ? overrideTau : baseTau;
+        }
+
+        private float ResolveResponseMultiplier(float motionIntensity)
+        {
+            if (Profile == null || Profile.Global == null || Profile.Global.ResponseCurve == null)
+                return 1f;
+
+            float multiplier = Profile.Global.ResponseCurve.Evaluate(Mathf.Clamp01(motionIntensity));
+            return Mathf.Max(0.05f, multiplier);
+        }
+
+        private float ComputeMotionIntensity(int boneIndex, Quaternion currentRaw)
+        {
+            if (_rawRotations == null || boneIndex < 0 || boneIndex >= _rawRotations.Length)
+                return 0f;
+
+            Quaternion previousRaw = _rawRotations[boneIndex];
+            if (previousRaw == default)
+                return 0f;
+
+            // 45 degrees maps to intensity 1; smaller changes keep the curve in the
+            // lower end where ResponseCurve can soften stepping on slower motion.
+            return Mathf.Clamp01(Quaternion.Angle(previousRaw, currentRaw) / 45f);
+        }
 
         // ExcludeBones are Transform[] references — scene-object references that cannot
         // be stored in a profile asset. The profile only carries keyword-based exclusion.

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using OnTwos.Runtime.Math;
+using OnTwos.Runtime.Recording;
 using OnTwos.Runtime.Utilities;
 
 namespace OnTwos.Runtime
@@ -48,6 +49,7 @@ namespace OnTwos.Runtime
         [Header("Proxy rig")]
         public bool HideSourceRenderers  = true;
         public bool StripProxyComponents = true;
+        public bool ForceEnableProxyRenderers = true;
 
         [Tooltip("When true, ApplyHeldPoses() is skipped while every Renderer on the visual " +
                  "proxy is off-screen. The PCHIP schedulers keep running (samples are still " +
@@ -103,6 +105,9 @@ namespace OnTwos.Runtime
 
         private Renderer[] _sourceRenderers;
         private Animator   _sourceAnimator;
+        private bool[]     _excluded;
+        private Quaternion[] _rawRotations;
+        private TrajectoryRecorder _trajectoryRecorder;
 
         // Cached set of every Renderer on the visual proxy. Used by visibility culling
         // to early-exit ApplyHeldPoses when none of them are on-screen. Populated once
@@ -128,7 +133,7 @@ namespace OnTwos.Runtime
     if (_sourceAnimator != null)
         _sourceAnimator.enabled = false;
 
-    if (HideSourceRenderers)
+    if (ResolveHideSourceRenderers())
     {
         _sourceRenderers = GetComponentsInChildren<Renderer>(true);
         for (int i = 0; i < _sourceRenderers.Length; i++)
@@ -155,26 +160,38 @@ namespace OnTwos.Runtime
 
         private void InitSchedulers()
         {
-            int   n          = _sourceBodies.Length;
-            float tau        = ResolveTau();
-            int   candidates = Mathf.Clamp(ResolveCandidates(), 1, 4);
+            int n = _sourceBodies.Length;
+            float tau = ResolveTau();
+            int candidates = Mathf.Clamp(ResolveCandidates(), 1, 4);
+            int bufferSize = ResolveBufferSize();
+            var overrides = ResolveBoneOverrides();
+            string[] excludeKeywords = ResolveExcludeKeywords();
 
-            _schedulers    = new HoldFrameScheduler[n];
+            _schedulers = new HoldFrameScheduler[n];
             _heldPositions = new Vector3[n];
             _heldRotations = new Quaternion[n];
+            _excluded = new bool[n];
+            _rawRotations = new Quaternion[n];
+            _trajectoryRecorder = new TrajectoryRecorder(ResolveSnapshotBufferSize(), n);
 
             for (int i = 0; i < n; i++)
             {
-                // bufferSize 30: ~0.6 s at 50 Hz FixedUpdate — enough history for
-                // PCHIP to fit a smooth curve over a ragdoll's recent trajectory.
-                _schedulers[i] = new HoldFrameScheduler(tau, candidates, bufferSize: 30);
+                Rigidbody rb = _sourceBodies[i];
+                if (rb == null) continue;
 
-                if (_sourceBodies[i] != null)
-                {
-                    _heldPositions[i] = _sourceBodies[i].position;
-                    _heldRotations[i] = _sourceBodies[i].rotation;
-                    _schedulers[i].Reset(_sourceBodies[i].rotation);
-                }
+                _heldPositions[i] = rb.position;
+                _heldRotations[i] = rb.rotation;
+                _rawRotations[i] = rb.rotation;
+
+                bool excluded = BoneFilter.IsExcluded(rb.transform, null, excludeKeywords, overrides);
+                _excluded[i] = excluded;
+                if (excluded)
+                    continue;
+
+                float boneTau = ResolveTauForBody(rb.transform, tau, overrides);
+                _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
+                _schedulers[i].CandidatesPerSegment = candidates;
+                _schedulers[i].Reset(rb.rotation);
             }
         }
 
@@ -185,13 +202,20 @@ namespace OnTwos.Runtime
         {
             if (_sourceBodies == null || _sourceBodies.Length == 0 || _visualBones == null)
                 return;
+            if (Profile != null && Profile.Global != null && !Profile.Global.Enabled)
+                return;
 
             PruneDestroyedBodies();
             if (_sourceBodies.Length == 0) return;
 
-            float t      = Time.fixedTime;
-            float liveTau = Profile != null ? Profile.Ragdoll.RagdollTau : Tau;
-            float posTau  = Profile != null ? Profile.Ragdoll.RagdollPosTau : PositionTau; //Null checks 
+            float t = Time.fixedTime;
+            float liveTau = ResolveTau();
+            float posTau  = ResolvePositionTau();
+            var overrides = ResolveBoneOverrides();
+            int liveCandidates = ResolveCandidates();
+
+            if (_trajectoryRecorder != null)
+                _trajectoryRecorder.Capture(_sourceBodies, t);
 
             if (!_initialized)
             {
@@ -200,7 +224,9 @@ namespace OnTwos.Runtime
                     if (_sourceBodies[i] == null) continue;
                     _heldPositions[i] = _sourceBodies[i].position;
                     _heldRotations[i] = _sourceBodies[i].rotation;
-                    _schedulers[i].Reset(_sourceBodies[i].rotation);
+                    _rawRotations[i] = _sourceBodies[i].rotation;
+                    if (_schedulers[i] != null)
+                        _schedulers[i].Reset(_sourceBodies[i].rotation);
                 }
                 _initialized = true;
                 ApplyHeldPoses();
@@ -219,9 +245,11 @@ namespace OnTwos.Runtime
                     for (int i = 0; i < _sourceBodies.Length; i++)
                     {
                         if (_sourceBodies[i] == null) continue;
-                        _schedulers[i].Reset(_sourceBodies[i].rotation);
                         _heldPositions[i] = _sourceBodies[i].position;
                         _heldRotations[i] = _sourceBodies[i].rotation;
+                        _rawRotations[i] = _sourceBodies[i].rotation;
+                        if (_schedulers[i] != null)
+                            _schedulers[i].Reset(_sourceBodies[i].rotation);
                     }
 
                     Debug.Log($"[RagdollStepper] {gameObject.name} woke at t+{t - _startTime:F2}s");
@@ -239,21 +267,39 @@ namespace OnTwos.Runtime
             // Run the PCHIP pipeline for every tracked bone.
             for (int i = 0; i < _sourceBodies.Length; i++)
             {
-                if (_sourceBodies[i] == null || _schedulers[i] == null) continue;
+                Rigidbody rb = _sourceBodies[i];
+                if (rb == null) continue;
 
-                // Push live tau so config slider changes take effect immediately.
-                _schedulers[i].Tau = liveTau;
+                Quaternion currentRot = rb.rotation;
+                Vector3 currentPos = rb.position;
+
+                if (_excluded != null && i < _excluded.Length && _excluded[i])
+                {
+                    _heldRotations[i] = currentRot;
+                    _heldPositions[i] = currentPos;
+                    _rawRotations[i] = currentRot;
+                    continue;
+                }
+
+                if (_schedulers[i] == null) continue;
+
+                float response = ResolveResponseMultiplier(ComputeMotionIntensity(i, currentRot));
+                float boneTau = ResolveTauForBody(rb.transform, liveTau, overrides) * response;
+                int boneCandidates = Mathf.Clamp(Mathf.RoundToInt(liveCandidates * response), 1, 4);
+
+                _schedulers[i].Tau = boneTau;
+                _schedulers[i].CandidatesPerSegment = boneCandidates;
 
                 Quaternion prevHeld = _heldRotations[i];
-                Quaternion newHeld  = _schedulers[i].Update(t, _sourceBodies[i].rotation);
+                Quaternion newHeld  = _schedulers[i].Update(t, currentRot);
                 _heldRotations[i]   = newHeld;
+                _rawRotations[i] = currentRot;
 
                 // When the rotation scheduler snaps, also snap the position —
                 // they should move together. The angle check uses a tiny epsilon
                 // rather than exact equality to guard against float drift.
                 bool rotSnapped = Quaternion.Angle(prevHeld, newHeld) > 0.01f;
 
-                Vector3 currentPos = _sourceBodies[i].position;
                 if (rotSnapped || Vector3.Distance(_heldPositions[i], currentPos) >= posTau)
                     _heldPositions[i] = currentPos;
             }
@@ -358,8 +404,8 @@ private bool AnchorWoke()
 {
     var result = RagdollProxyBuilder.Build(
         gameObject,
-        stripComponents:      StripProxyComponents,
-        forceEnableRenderers: true
+        stripComponents:      ResolveStripProxyComponents(),
+        forceEnableRenderers: ResolveForceEnableProxyRenderers()
     );
 
     _visualProxyRoot = result.Proxy;
@@ -422,6 +468,9 @@ private bool AnchorWoke()
             if (_sourceBodies.Length == 0) return;
 
             _anchorIndex = PickAnchorIndex(_sourceBodies);
+            _trajectoryRecorder = _sourceBodies.Length > 0
+                ? new TrajectoryRecorder(ResolveSnapshotBufferSize(), _sourceBodies.Length)
+                : null;
 
             // Reinitialize so the next FixedUpdate seeds the schedulers cleanly
             // rather than continuing from stale window state.
@@ -480,8 +529,56 @@ private bool AnchorWoke()
         private float ResolveTau()
     => Profile != null ? Profile.Ragdoll.RagdollTau : Tau;
 
+private float ResolvePositionTau()
+    => Profile != null ? Profile.Ragdoll.RagdollPosTau : PositionTau;
+
 private int ResolveCandidates()
-    => Profile != null ? Profile.Ragdoll.GaussPoints : 2;
+    => Profile != null ? Profile.LiveAnimation.GaussPoints : 2;
+
+private int ResolveBufferSize()
+    => Profile != null ? Mathf.Max(4, Profile.LiveAnimation.BufferSize) : 30;
+
+private int ResolveSnapshotBufferSize()
+    => Profile != null ? Mathf.Max(2, Profile.Proxy.SnapshotBufferSize) : 120;
+
+private bool ResolveHideSourceRenderers()
+    => Profile != null ? Profile.Proxy.HideSourceRenderers : HideSourceRenderers;
+
+private bool ResolveStripProxyComponents()
+    => Profile != null ? Profile.Proxy.StripProxyComponents : StripProxyComponents;
+
+private bool ResolveForceEnableProxyRenderers()
+    => Profile != null ? Profile.Proxy.ForceEnableProxyRenderers : ForceEnableProxyRenderers;
+
+private string[] ResolveExcludeKeywords()
+    => Profile != null ? Profile.LiveAnimation.ExcludeKeywords : Array.Empty<string>();
+
+private OnTwosProfile.BoneOverride[] ResolveBoneOverrides()
+    => Profile != null ? Profile.BoneOverrides : Array.Empty<OnTwosProfile.BoneOverride>();
+
+private float ResolveTauForBody(Transform bone, float baseTau, OnTwosProfile.BoneOverride[] overrides)
+{
+    float overrideTau = BoneFilter.GetTauOverride(bone, overrides);
+    return overrideTau > 0f ? overrideTau : baseTau;
+}
+
+private float ResolveResponseMultiplier(float motionIntensity)
+{
+    if (Profile == null || Profile.Global == null || Profile.Global.ResponseCurve == null)
+        return 1f;
+
+    float multiplier = Profile.Global.ResponseCurve.Evaluate(Mathf.Clamp01(motionIntensity));
+    return Mathf.Max(0.05f, multiplier);
+}
+
+private float ComputeMotionIntensity(int bodyIndex, Quaternion currentRaw)
+{
+    if (_rawRotations == null || bodyIndex < 0 || bodyIndex >= _rawRotations.Length)
+        return 0f;
+
+    Quaternion previousRaw = _rawRotations[bodyIndex];
+    return Mathf.Clamp01(Quaternion.Angle(previousRaw, currentRaw) / 45f);
+}
 
 private float ResolveSettleVelocity()
     => Profile != null ? Profile.Settling.SettleVelocityThreshold : SettleVelocityThreshold;

@@ -76,6 +76,25 @@ namespace OnTwos.Runtime.Math
         }
 
         /// <summary>
+        /// Discard all samples and reset to the initial empty state.
+        /// Called by HoldFrameScheduler.Reset() to prevent pre-flush motion
+        /// from bleeding into the PCHIP fit after a state transition.
+        /// </summary>
+        public void Clear()
+        {
+            Count  = 0;
+            _head  = 0;
+            _dirty = true;
+
+            // Invalidate cached fits and LUT so stale data can't be evaluated.
+            _px = null;
+            _py = null;
+            _pz = null;
+            _pw = null;
+            _lutValid = false;
+        }
+
+        /// <summary>
         /// Evaluate the PCHIP curve at time t.
         /// Returns raw latest sample if fewer than MinSamples collected.
         /// </summary>
@@ -253,13 +272,13 @@ namespace OnTwos.Runtime.Math
         /// <summary>The timestamp of the oldest sample currently in the buffer.</summary>
         public float OldestTime
         {
-        get
-        {
-            if (Count == 0) return 0f;
-            int start = Count < _capacity ? 0 : _head;
-            return _times[start];
+            get
+            {
+                if (Count == 0) return 0f;
+                int start = Count < _capacity ? 0 : _head;
+                return _times[start];
             }
-}
+        }
 
         private static (float[], Quaternion[]) Deduplicate(float[] xs, Quaternion[] qs)
         {

@@ -16,17 +16,12 @@ namespace OnTwos.Runtime.Math
     ///   4. Walk candidates through the deviation threshold.
     ///   5. Return the current held pose.
     ///
-    /// Arc-length vs Gauss–Legendre candidate placement:
-    ///   GL nodes are optimal for polynomial integration — not for minimising the
-    ///   max error of a piecewise-constant held-pose approximation. Arc-length
-    ///   placement is optimal for that objective: it distributes candidates where
-    ///   the bone has rotated equally, so no inter-candidate gap contains more
-    ///   rotation than any other. Empirically ~1.8× lower median max error across
-    ///   10k random monotone segments at all tested τ values.
-    ///
-    ///   Performance: ArcLengthCandidates() uses a prebuilt LUT (two binary-search
-    ///   lerps per candidate, no curve evaluation). Overhead vs GL: ~4× per call,
-    ///   negligible in absolute terms (~5 µs vs ~1.5 µs per segment).
+    /// MinHoldFrames / MaxHoldFrames:
+    ///   MinHoldFrames prevents snapping more often than once per N frames (jitter
+    ///   guard on fast motion). MaxHoldFrames forces a snap after N frames even when
+    ///   deviation hasn't crossed Tau (prevents frozen pose on slow / idle motion).
+    ///   Both are frame-level counters, not candidate-level — they operate on the
+    ///   whole Update() call, not on individual candidates within one walk.
     /// </summary>
     public sealed class HoldFrameScheduler
     {
@@ -37,7 +32,31 @@ namespace OnTwos.Runtime.Math
         // Writable so external callers can push live profile values before each
         // Update call. Not readonly — values can change in real time.
         public float Tau;
-        private readonly int _nCandidates; // per monotone segment
+
+        /// <summary>
+        /// Minimum Update() calls that must elapse between snaps.
+        /// 0 = no minimum (default). Prevents sub-frame jitter on fast motion.
+        /// </summary>
+        public int MinHoldFrames = 0;
+
+        /// <summary>
+        /// Maximum Update() calls before a snap is forced regardless of deviation.
+        /// int.MaxValue = never forced (default). Prevents frozen pose on slow motion.
+        /// </summary>
+        public int MaxHoldFrames = int.MaxValue;
+
+        /// <summary>
+        /// Arc-length candidates per monotone segment. Kept mutable so the profile's
+        /// ResponseCurve can tune the density without rebuilding the scheduler.
+        /// </summary>
+        public int CandidatesPerSegment
+        {
+            get => _nCandidates;
+            set => _nCandidates = value < 1 ? 1 : value > 4 ? 4 : value;
+        }
+
+        private int _nCandidates; // per monotone segment
+        private int _framesSinceSnap;      // frames elapsed since the last snap
 
         // Extrema cache — recomputed every ExtremaInterval frames only.
         private List<float> _cachedExtrema = new List<float>();
@@ -54,9 +73,10 @@ namespace OnTwos.Runtime.Math
 
             _sampler = new MonotoneCubicSampler(bufferSize);
             Tau = tau;
-            _nCandidates = candidatesPerSegment;
+            CandidatesPerSegment = candidatesPerSegment;
             _held = Quaternion.identity;
             _windowStart = -1f;
+            _framesSinceSnap = 0;
         }
 
         /// <summary>
@@ -66,14 +86,19 @@ namespace OnTwos.Runtime.Math
         public Quaternion Update(float time, Quaternion boneRotation)
         {
             _sampler.Add(time, boneRotation);
+            _framesSinceSnap++;
 
+            // First sample after construction or Reset — seed the window and held pose.
             if (_windowStart < 0f)
             {
                 _windowStart = time;
                 _held = boneRotation;
+                // Don't count the seed frame against MinHoldFrames.
+                _framesSinceSnap = 0;
                 return _held;
             }
 
+            // Not enough history yet for a meaningful PCHIP fit — hold incoming pose.
             if (!_sampler.Ready)
             {
                 _held = boneRotation;
@@ -81,9 +106,8 @@ namespace OnTwos.Runtime.Math
             }
 
             float tStart = _windowStart;
-            float tEnd = time;
+            float tEnd   = time;
 
-            // Window too small to do anything useful — hold current pose.
             if (tEnd - tStart < 1e-4f)
                 return _held;
 
@@ -95,50 +119,79 @@ namespace OnTwos.Runtime.Math
             }
             _framesSinceExtremaScan++;
 
-            // Build segment boundaries: tStart, extrema..., tEnd.
+            // Build segment boundaries.
+            // FIX (Bug 2): filter cached extrema to the current window (tStart, tEnd)
+            // before building the boundaries list. Without this filter, extrema that
+            // predate the current window start produce unsorted, out-of-range segment
+            // boundaries that corrupt candidate placement.
             List<float> boundaries = new List<float>(_cachedExtrema.Count + 2) { tStart };
-            boundaries.AddRange(_cachedExtrema);
+            foreach (float e in _cachedExtrema)
+                if (e > tStart && e < tEnd)
+                    boundaries.Add(e);
             if (boundaries[boundaries.Count - 1] < tEnd)
                 boundaries.Add(tEnd);
 
             // Generate arc-length candidates within each monotone segment.
-            // ArcLengthCandidates() uses the prebuilt LUT — no PCHIP eval at query time.
             List<float> candidates = new List<float>(boundaries.Count * _nCandidates);
-
             for (int seg = 0; seg < boundaries.Count - 1; seg++)
             {
                 float a = boundaries[seg];
                 float b = boundaries[seg + 1];
                 if (b - a < 1e-5f) continue;
-
                 float[] segCandidates = _sampler.ArcLengthCandidates(a, b, _nCandidates);
                 candidates.AddRange(segCandidates);
             }
-
             candidates.Sort();
 
-            // Walk candidates through deviation threshold.
-            foreach (float t in candidates)
+            // FIX (Bug C): enforce MinHoldFrames / MaxHoldFrames.
+            bool allowSnap = _framesSinceSnap >= MinHoldFrames;
+            bool forceSnap = MaxHoldFrames < int.MaxValue && _framesSinceSnap >= MaxHoldFrames;
+
+            if (forceSnap)
             {
-                if (t > time) break;
-
-                Quaternion evaluated = _sampler.Evaluate(t);
-
-                if (Quaternion.Angle(_held, evaluated) > Tau)
-                    _held = evaluated;
+                // Force snap to the latest evaluated pose and reset the counter.
+                _held = _sampler.Evaluate(tEnd);
+                _framesSinceSnap = 0;
             }
+            else if (allowSnap)
+            {
+                // Walk candidates through deviation threshold, chaining snaps across
+                // the full window so the held pose reflects the latest step position.
+                foreach (float t in candidates)
+                {
+                    if (t > time) break;
+                    Quaternion evaluated = _sampler.Evaluate(t);
+                    if (Quaternion.Angle(_held, evaluated) > Tau)
+                    {
+                        _held = evaluated;
+                        _framesSinceSnap = 0;
+                    }
+                }
+            }
+            // else: MinHoldFrames not yet elapsed — return held without modification.
 
             // Advance window — drop oldest portion to keep buffer fresh.
             _windowStart = _sampler.OldestTime;
 
-            return _held; }
+            return _held;
+        }
 
+        /// <summary>
+        /// Reset scheduler to a new initial pose, clearing all sample history.
+        ///
+        /// FIX (Bug 1): previously only cleared _held / _windowStart / _cachedExtrema.
+        /// The MonotoneCubicSampler buffer was left intact, causing pre-flush motion
+        /// to bleed into the PCHIP fit for several frames after a state transition.
+        /// Now calls _sampler.Clear() so the new state starts from a clean window.
+        /// </summary>
         public void Reset(Quaternion initialPose)
         {
-         _held = initialPose;
-         _windowStart = -1f;
-         _framesSinceExtremaScan = ExtremaInterval; // force rescan next Update
-         _cachedExtrema.Clear();
+            _sampler.Clear();           // clear sample history — old frames cannot bleed in
+            _held        = initialPose;
+            _windowStart = -1f;
+            _framesSinceSnap         = 0;
+            _framesSinceExtremaScan  = ExtremaInterval; // force rescan next Update
+            _cachedExtrema.Clear();
         }
     }
 }
