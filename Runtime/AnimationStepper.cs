@@ -96,6 +96,8 @@ namespace OnTwos.Runtime
         private bool[]               _excluded;
         private float                _startTime;
         private bool                 _ready;
+        private MaterialPropertyBlock _propertyBlock;
+        private Vector3 _rootSmearVector;
 
         // Null in AnySource mode or when no Animator is found in AnimatorDriven mode.
         private AnimatorStateWatcher _stateWatcher;
@@ -116,6 +118,7 @@ namespace OnTwos.Runtime
             _schedulers   = new HoldFrameScheduler[_bones.Length];
             _rawRotations = new Quaternion[_bones.Length];
             _excluded     = new bool[_bones.Length];
+            _propertyBlock = new MaterialPropertyBlock();
 
             // AnimatorStateWatcher is only meaningful in AnimatorDriven mode.
             if (Mode == StepperMode.AnimatorDriven)
@@ -216,6 +219,19 @@ namespace OnTwos.Runtime
                 if (!culled)
                     bone.localRotation = held;
             }
+
+            if (_bones.Length > 0)
+{
+    public Transform SmearReferenceBone; // drag the Hips bone in, not the Armature root
+    _rootSmearVector = SmearReferenceBone.TransformDirection(_rawRotations[0] * Vector3.forward)
+                      - SmearReferenceBone.TransformDirection(SmearReferenceBone.localRotation * Vector3.forward);
+}
+
+_propertyBlock.SetVector("_SmearDirection", _rootSmearVector.normalized);
+_propertyBlock.SetFloat("_SmearStrength", _rootSmearVector.magnitude);
+foreach (var renderer in _renderers)
+    if (renderer is SkinnedMeshRenderer)
+        renderer.SetPropertyBlock(_propertyBlock);
         }
 
         // -----------------------------------------------------------------
