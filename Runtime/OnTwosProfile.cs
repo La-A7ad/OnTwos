@@ -46,6 +46,15 @@ namespace OnTwos.Runtime
         [Serializable]
         public class LiveAnimationSettings
         {
+
+            [Range(1, 30)]
+            [Tooltip("Minimum frames between snaps. Set close to MaxHoldFrames for a metronomic, PSX-style cadence.")]
+            public int MinHoldFrames = 3;
+
+            [Range(1, 30)]
+            [Tooltip("Maximum frames before a snap is forced regardless of deviation. Prevents frozen poses on slow motion.")]
+            public int MaxHoldFrames = 4;
+
             [Range(0.5f, 45f)]
             [Tooltip("Crunchiness threshold for the live animation stepper, in degrees. " +
                      "5° = subtle stepping. 15° = obvious stop-motion. 30° = very chunky. " +

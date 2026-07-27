@@ -164,6 +164,8 @@ namespace OnTwos.Runtime
             float tau = ResolveTau();
             int candidates = Mathf.Clamp(ResolveCandidates(), 1, 4);
             int bufferSize = ResolveBufferSize();
+            int minHold = ResolveMinHoldFrames();
+            int maxHold = ResolveMaxHoldFrames(minHold);
             var overrides = ResolveBoneOverrides();
             string[] excludeKeywords = ResolveExcludeKeywords();
 
@@ -191,6 +193,8 @@ namespace OnTwos.Runtime
                 float boneTau = ResolveTauForBody(rb.transform, tau, overrides);
                 _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
                 _schedulers[i].CandidatesPerSegment = candidates;
+                _schedulers[i].MinHoldFrames = minHold;
+                _schedulers[i].MaxHoldFrames = maxHold;
                 _schedulers[i].Reset(rb.rotation);
             }
         }
@@ -213,6 +217,8 @@ namespace OnTwos.Runtime
             float posTau  = ResolvePositionTau();
             var overrides = ResolveBoneOverrides();
             int liveCandidates = ResolveCandidates();
+            int liveMinHold = ResolveMinHoldFrames();
+            int liveMaxHold = ResolveMaxHoldFrames(liveMinHold);
 
             if (_trajectoryRecorder != null)
                 _trajectoryRecorder.Capture(_sourceBodies, t);
@@ -289,6 +295,8 @@ namespace OnTwos.Runtime
 
                 _schedulers[i].Tau = boneTau;
                 _schedulers[i].CandidatesPerSegment = boneCandidates;
+                _schedulers[i].MinHoldFrames = liveMinHold;
+                _schedulers[i].MaxHoldFrames = liveMaxHold;
 
                 Quaternion prevHeld = _heldRotations[i];
                 Quaternion newHeld  = _schedulers[i].Update(t, currentRot);
@@ -540,6 +548,18 @@ private int ResolveBufferSize()
 
 private int ResolveSnapshotBufferSize()
     => Profile != null ? Mathf.Max(2, Profile.Proxy.SnapshotBufferSize) : 120;
+
+// Cadence bounds, in physics frames. Profile-only by design — RagdollStepperEditor
+// directs the user to the profile's Ragdoll foldout for these. Without them the
+// schedulers keep HoldFrameScheduler's 0 / int.MaxValue defaults, which means the
+// Ragdoll Min/MaxHoldFrames settings have no effect at all.
+private int ResolveMinHoldFrames()
+    => Mathf.Max(1, Profile != null ? Profile.Ragdoll.MinHoldFrames : 2);
+
+// Clamped to >= min so an inverted profile setting degrades to a locked cadence
+// rather than forcing a snap every physics frame (which would disable stepping).
+private int ResolveMaxHoldFrames(int minHoldFrames)
+    => Mathf.Max(minHoldFrames, Profile != null ? Profile.Ragdoll.MaxHoldFrames : 4);
 
 private bool ResolveHideSourceRenderers()
     => Profile != null ? Profile.Proxy.HideSourceRenderers : HideSourceRenderers;

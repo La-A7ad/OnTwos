@@ -32,7 +32,17 @@ namespace OnTwos.Editor
 
             var profile = (OnTwosProfile)target;
 
-            DrawHeader();
+            // Both HelpBox conditions are evaluated once, here, before any drawing.
+            // Evaluating them inline at their use sites lets a slider dragged across the
+            // comparison boundary change the value between Unity's Layout and Repaint
+            // passes, so Repaint emits a different number of controls than Layout
+            // measured. GUILayout then throws "You can't nest Foldout Headers, end it
+            // with EndFoldoutHeader" and truncates every control after that point —
+            // which is what hid ExcludeKeywords and BoneOverrides.
+            bool ragdollHoldWarning = profile.Ragdoll.MaxHoldFrames < profile.Ragdoll.MinHoldFrames;
+            bool settlingThresholdWarning = profile.Settling.WakeVelocityThreshold <= profile.Settling.SettleVelocityThreshold;
+
+            DrawProfileHeader();
 
             _foldGlobal = EditorGUILayout.BeginFoldoutHeaderGroup(_foldGlobal, K.Global);
             if (_foldGlobal)
@@ -57,7 +67,7 @@ namespace OnTwos.Editor
             {
                 EditorGUI.indentLevel++;
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Ragdoll"), true);
-                if (profile.Ragdoll.MaxHoldFrames < profile.Ragdoll.MinHoldFrames)
+                if (ragdollHoldWarning)
                     EditorGUILayout.HelpBox("Max Hold Frames < Min Hold Frames — every frame will force a snap.", MessageType.Warning);
                 EditorGUI.indentLevel--;
             }
@@ -68,7 +78,7 @@ namespace OnTwos.Editor
             {
                 EditorGUI.indentLevel++;
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Settling"), true);
-                if (profile.Settling.WakeVelocityThreshold <= profile.Settling.SettleVelocityThreshold)
+                if (settlingThresholdWarning)
                     EditorGUILayout.HelpBox(
                         "Wake threshold <= Settle threshold. The rig will wake on the same noise that should settle it.",
                         MessageType.Warning);
@@ -111,7 +121,11 @@ namespace OnTwos.Editor
             serializedObject.ApplyModifiedProperties();
         }
 
-        private void DrawHeader()
+        // Deliberately NOT named DrawHeader: that hides UnityEditor.Editor.DrawHeader(),
+        // which the inspector calls externally to draw the standard asset header. The
+        // shadowing meant this body ran from OnInspectorGUI while Unity's own version
+        // still ran from the outside, drawing two headers' worth of layout.
+        private void DrawProfileHeader()
         {
             EditorGUILayout.LabelField("CrunchyRagdoll Profile", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(

@@ -17,6 +17,12 @@ namespace OnTwos.Editor
             serializedObject.Update();
             var authoring = (OnTwosAuthoring)target;
 
+            // Hoisted before any drawing so a toggle flipped during the Layout pass can't
+            // change the control count in the Repaint pass — see OnTwosProfileEditor for
+            // what that desync does to GUILayout.
+            bool kinematicsManaged = authoring.ManageRigidbodyKinematics;
+            bool autoCreateProxy   = authoring.AutoCreateProxy;
+
             EditorGUILayout.LabelField("OnTwos Authoring", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(
                 "Attach to the root of any rig you want stepped. AnimationStepper is added " +
@@ -45,6 +51,16 @@ namespace OnTwos.Editor
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("AutoBindOnAwake"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("AutoCreateProxy"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("AddDiagnostics"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("ManageRigidbodyKinematics"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("ZeroVelocityOnRelease"));
+                if (!kinematicsManaged)
+                    EditorGUILayout.HelpBox(
+                        "Rigidbody kinematics unmanaged. Ragdoll bodies created by Unity's " +
+                        "Ragdoll Wizard are non-kinematic, and AnimationStepper writes bone " +
+                        "rotations to them every frame — the joint solver will fight those " +
+                        "writes and dump the accumulated impulse when the ragdoll activates. " +
+                        "Set isKinematic yourself, or re-enable this.",
+                        MessageType.Warning);
 
                 EditorGUILayout.Space(4);
                 using (new EditorGUILayout.HorizontalScope())
@@ -83,7 +99,7 @@ namespace OnTwos.Editor
                 EditorGUILayout.LabelField($"Transforms under bone root: {boneCount}");
                 EditorGUILayout.LabelField($"Rigidbodies under physics root: {rigidbodyCount}");
 
-                if (rigidbodyCount == 0 && authoring.AutoCreateProxy)
+                if (rigidbodyCount == 0 && autoCreateProxy)
                     EditorGUILayout.HelpBox("AutoCreateProxy is on but no Rigidbodies exist under the physics root. The proxy will be empty.", MessageType.Warning);
 
                 EditorGUI.indentLevel--;

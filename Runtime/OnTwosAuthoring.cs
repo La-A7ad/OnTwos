@@ -47,18 +47,78 @@ namespace OnTwos.Runtime
                  "Disable in shipping builds to suppress diagnostic output.")]
         public bool AddDiagnostics = false;
 
+        [Tooltip("If true, every Rigidbody under the physics root is held kinematic while " +
+                 "the rig is animator-driven, and released to dynamic by ActivateRagdoll(). " +
+                 "Required for stability: the Ragdoll Wizard creates bodies non-kinematic, " +
+                 "and AnimationStepper writes localRotation to those same bones every frame. " +
+                 "A non-kinematic body driven by transform writes fights its CharacterJoint " +
+                 "solver, accumulating corrective impulse until activation dumps it all at " +
+                 "once. Disable only if your own code manages isKinematic.")]
+        public bool ManageRigidbodyKinematics = true;
+
+        [Tooltip("If true, linear and angular velocity are zeroed on every body at the moment " +
+                 "the ragdoll is released. Gives a predictable limp collapse. Disable if you " +
+                 "want to seed the bodies with your own momentum for a death impulse.")]
+        public bool ZeroVelocityOnRelease = true;
+
         /// <summary>True after <see cref="ActivateRagdoll"/> has been called and before <see cref="Deactivate"/>.</summary>
         public bool IsRagdollActive => _isRagdollActive;
 
         private AnimationStepper _animStepper;
         private RagdollStepper   _ragdollStepper;
         private bool             _isRagdollActive;
+        private Rigidbody[]      _physicsBodies;
 
         private void Awake()
         {
             AutoResolveBindings();
 
+            // Cache and freeze before AttachAnimationStepper so the stepper never gets a
+            // frame of writing bone rotations onto live, non-kinematic bodies.
+            CachePhysicsBodies();
+            if (ManageRigidbodyKinematics)
+                SetBodiesKinematic(true);
+
             AttachAnimationStepper();
+        }
+
+        private void CachePhysicsBodies()
+        {
+            Transform root = PhysicsRoot != null ? PhysicsRoot : transform;
+            _physicsBodies = root.GetComponentsInChildren<Rigidbody>(true);
+        }
+
+        /// <summary>
+        /// Flip every tracked body between animator-driven (kinematic) and
+        /// simulated (dynamic). Kinematic bodies ignore their CharacterJoints and
+        /// accept transform writes without provoking the solver, which is exactly
+        /// what AnimationStepper needs while it is holding stepped poses.
+        /// </summary>
+        private void SetBodiesKinematic(bool kinematic)
+        {
+            if (_physicsBodies == null) return;
+
+            for (int i = 0; i < _physicsBodies.Length; i++)
+            {
+                Rigidbody rb = _physicsBodies[i];
+                if (rb == null) continue;
+
+                rb.isKinematic = kinematic;
+
+                // Order matters: velocity writes to a kinematic body are discarded by
+                // PhysX, so this has to happen after the body is already dynamic.
+                // Otherwise the body inherits whatever motion it last held and launches
+                // on activation instead of collapsing.
+                if (!kinematic && ZeroVelocityOnRelease)
+                {
+#if UNITY_6000_0_OR_NEWER
+                    rb.linearVelocity = Vector3.zero;
+#else
+                    rb.velocity = Vector3.zero;
+#endif
+                    rb.angularVelocity = Vector3.zero;
+                }
+            }
         }
 
         /// <summary>
@@ -116,6 +176,18 @@ namespace OnTwos.Runtime
             if (_animStepper != null)
                 _animStepper.Deactivate();
 
+            // The Animator has to stop before the bodies go dynamic, not after.
+            // RagdollStepper disables it too, but only in its Start() — which lands at the
+            // end of this frame. That would leave one full frame of the Animator driving
+            // bone transforms while the bodies are already simulating, which is the exact
+            // transform-vs-solver fight this handoff exists to avoid. Disabling here is
+            // idempotent with RagdollStepper's own call.
+            if (AnimatorRoot != null)
+                AnimatorRoot.enabled = false;
+
+            if (ManageRigidbodyKinematics)
+                SetBodiesKinematic(false);
+
             if (!AutoCreateProxy) return null;
 
             _ragdollStepper              = GetComponent<RagdollStepper>() ?? gameObject.AddComponent<RagdollStepper>();
@@ -143,6 +215,16 @@ namespace OnTwos.Runtime
                 Destroy(_ragdollStepper);
                 _ragdollStepper = null;
             }
+
+            // Undo everything ActivateRagdoll() and RagdollStepper.Start() changed.
+            // Neither the stepper's OnDestroy nor its OnDisable restores the Animator, so
+            // without this the rig stays limp: bodies dynamic, Animator off, and a freshly
+            // re-attached AnimationStepper writing localRotation into live joints again.
+            if (ManageRigidbodyKinematics)
+                SetBodiesKinematic(true);
+
+            if (AnimatorRoot != null)
+                AnimatorRoot.enabled = true;
 
             AttachAnimationStepper();
         }
