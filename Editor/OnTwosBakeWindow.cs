@@ -94,11 +94,28 @@ namespace OnTwos.Editor.Windows
                 Color.cyan,
                 new Rect(0f, 0f, 1f, 4f));
 
-            if (_profile != null && _profile.LiveAnimation.PositionTau > 0f)
+            // Cadence readout — hoisted conditions, evaluated before any drawing.
+            bool showPositionNote = _profile != null && _profile.LiveAnimation.PositionTau > 0f;
+            bool showCadenceNote  = _profile != null;
+
+            if (showCadenceNote)
+            {
+                float rate   = Mathf.Max(0.01f, _profile.LiveAnimation.StepRate);
+                float jitter = Mathf.Clamp01(_profile.LiveAnimation.CadenceJitter);
+                EditorGUILayout.HelpBox(
+                    $"Cadence: {rate:F1} poses/sec" +
+                    (jitter <= 0f ? " (locked)" : $", jitter {jitter:P0}") +
+                    $".\nSource clip is {(_sourceClip != null ? _sourceClip.frameRate : 0f):F0} fps — " +
+                    "the baked cadence is in clip TIME, so it is the same at any playback framerate.",
+                    MessageType.None);
+            }
+
+            if (showPositionNote)
             {
                 EditorGUILayout.HelpBox(
                     $"Position stepping enabled (PositionTau = {_profile.LiveAnimation.PositionTau:F3} m). " +
-                    "localPosition curves will be baked alongside localRotation curves.",
+                    "localPosition curves will be baked alongside localRotation curves. " +
+                    "Exclude the root/hips if root motion drives gameplay.",
                     MessageType.None);
             }
 
@@ -174,12 +191,17 @@ namespace OnTwos.Editor.Windows
         private string RunBake()
         {
             // ---- Step 1: Discover bones that will be stepped ----
+            // BoneOverrides must be passed here, not just keywords. The runtime steppers
+            // resolve exclusion through BoneOverrides first (ForceExclude wins, and a
+            // matched override suppresses keyword matching entirely), so omitting them
+            // made a baked clip step a different set of bones than Play mode previewed.
             string[] keywords = _profile.LiveAnimation.ExcludeKeywords ?? System.Array.Empty<string>();
+            var overrides = _profile.BoneOverrides ?? System.Array.Empty<OnTwosProfile.BoneOverride>();
             var bones = new List<Transform>();
             foreach (Transform t in _skeletonObject.GetComponentsInChildren<Transform>(true))
             {
                 if (t == _skeletonObject.transform) continue;
-                if (!BoneFilter.IsExcluded(t, null, keywords))
+                if (!BoneFilter.IsExcluded(t, null, keywords, overrides))
                     bones.Add(t);
             }
 
@@ -227,6 +249,16 @@ namespace OnTwos.Editor.Windows
             float positionTau = Mathf.Max(0f, _profile.LiveAnimation.PositionTau);
             bool  bakePosition = positionTau > 0f;
 
+            // Cadence, in seconds of CLIP time. The sample loop below advances `st` in
+            // clip seconds, so a StepRate of 12 yields 12 poses/sec whether the source
+            // clip is authored at 24, 30 or 60 fps — and matches what the runtime
+            // stepper previewed, since both gate on elapsed time rather than tick count.
+            // Previously the scheduler was constructed without any cadence at all, so
+            // every bake was purely Tau-adaptive and ignored the profile's cadence.
+            float maxHoldSeconds = 1f / Mathf.Max(0.01f, _profile.LiveAnimation.StepRate);
+            float minHoldSeconds = maxHoldSeconds *
+                                   (1f - Mathf.Clamp01(_profile.LiveAnimation.CadenceJitter));
+
             var outputClip = new AnimationClip { frameRate = frameRate };
 
             foreach (var bone in bones)
@@ -234,7 +266,14 @@ namespace OnTwos.Editor.Windows
                 var boneSamples = rawSamples[bone];
                 if (boneSamples.Count == 0) continue;
 
-                var scheduler = new HoldFrameScheduler(baseTau, gaussPoints, bufferSize);
+                // Per-bone Tau override, matching the runtime resolvers. Without this a
+                // rig using BoneOverrides bakes at a different crunch than it previews.
+                float boneBaseTau = BoneFilter.GetTauOverride(bone, overrides);
+                if (boneBaseTau <= 0f) boneBaseTau = baseTau;
+
+                var scheduler = new HoldFrameScheduler(boneBaseTau, gaussPoints, bufferSize);
+                scheduler.MinHoldSeconds = minHoldSeconds;
+                scheduler.MaxHoldSeconds = maxHoldSeconds;
                 scheduler.Reset(boneSamples[0].rot);
 
                 // Collect the scheduler's held output for every input sample, evaluating
@@ -255,7 +294,7 @@ namespace OnTwos.Editor.Windows
                     // across the clip so the same curve scales to any clip length.
                     float tNorm = Mathf.Clamp01(st / clipLength);
                     float tauMul = Mathf.Max(0f, _tauOverTime.Evaluate(tNorm));
-                    scheduler.Tau = baseTau * tauMul;
+                    scheduler.Tau = boneBaseTau * tauMul;
 
                     Quaternion prevHeld = heldRotFrames.Count > 0 ? heldRotFrames[heldRotFrames.Count - 1].rot : sr;
                     Quaternion newHeld  = scheduler.Update(st, sr);

@@ -79,6 +79,26 @@ namespace OnTwos.Runtime
                  "Disable if you have no Renderers in the bone hierarchy.")]
         public bool EnableVisibilityCulling = false;
 
+        [Header("Visual offset (foot planting)")]
+        [Tooltip("Transform sitting between this GameObject and the rig root. When assigned, " +
+                 "the rig's WORLD position is held for the duration of each step while the " +
+                 "GameObject (and its collider) keeps moving smoothly.\n\n" +
+                 "This is what stops feet sliding. Holding a bone's rotation freezes the leg " +
+                 "pose, but the character keeps translating, so a planted foot skates. Holding " +
+                 "world position for the same interval makes the foot genuinely static.\n\n" +
+                 "Leave null to disable. Use the 'Create Visual Offset Root' button on this " +
+                 "component to set one up.")]
+        public Transform VisualOffsetRoot;
+
+        [Range(0f, 0.5f)]
+        [Tooltip("Maximum metres the rendered rig may lag behind its true position before a " +
+                 "resync is forced. This is a SAFETY BOUND, not the step trigger — position " +
+                 "normally releases on the same beat as the rotation cadence.\n\n" +
+                 "Note it also offsets the rig from its colliders, which stay put. In a shooter " +
+                 "that means shots resolve against the collider, not the visible mesh, so keep " +
+                 "this small — 0.05 is a good starting point.")]
+        public float MaxVisualOffset = 0.05f;
+
         [Header("Smear (whole-mesh MVP)")]
         [Tooltip("Bone used to derive the whole-mesh smear vector pushed to the " +
                  "_SmearDirection/_SmearStrength shader properties. Assign a bone that " +
@@ -90,15 +110,20 @@ namespace OnTwos.Runtime
         [Range(0.5f, 45f)] public float Tau = 5f;
         [Range(1, 4)] public int CandidatesPerSegment = 2;
 
-        [Range(1, 30)]
-        [Tooltip("Minimum frames between snaps. Set equal to MaxHoldFrames for a locked, " +
-                 "metronomic cadence — 2 = animating on twos, 3 = on threes.")]
-        public int MinHoldFrames = 2;
+        [Range(1f, 60f)]
+        [Tooltip("Cadence, in new poses per second. 12 = the classic 'on twos'. " +
+                 "Measured in time, so the look is identical at any framerate.")]
+        public float StepRate = 12f;
 
-        [Range(1, 30)]
-        [Tooltip("Maximum frames before a snap is forced regardless of deviation. " +
-                 "Set equal to MinHoldFrames for a locked cadence.")]
-        public int MaxHoldFrames = 2;
+        [Range(0f, 1f)]
+        [Tooltip("0 = locked metronome, every bone on the same beat (recommended). " +
+                 "Above 0, bones may snap early off Tau and desynchronise.")]
+        public float CadenceJitter = 0f;
+
+        [Range(30f, 1440f)]
+        [Tooltip("Rotation speed, in degrees per second, that maps to ResponseCurve input 1.0. " +
+                 "Only used when a Profile with a ResponseCurve is assigned.")]
+        public float MaxDegreesPerSecond = 360f;
 
         public Transform[] ExcludeBones    = Array.Empty<Transform>();
         public string[]    ExcludeKeywords = Array.Empty<string>();
@@ -116,6 +141,12 @@ namespace OnTwos.Runtime
         private MaterialPropertyBlock _propertyBlock;
         private Vector3 _rootSmearVector;
         private int _smearBoneIndex = -1; // index of SmearReferenceBone within _bones; -1 = disabled
+
+        // Visual offset state. _heldWorldPos is where the rig is currently being drawn;
+        // the GameObject's real transform continues to move underneath it.
+        private Vector3 _heldWorldPos;
+        private float   _lastPositionSnapTime;
+        private bool    _visualOffsetReady;
 
         // Null in AnySource mode or when no Animator is found in AnimatorDriven mode.
         private AnimatorStateWatcher _stateWatcher;
@@ -164,8 +195,8 @@ namespace OnTwos.Runtime
             float       tau            = ResolveTau();
             int         candidates     = ResolveCandidates();
             int         bufferSize     = ResolveBufferSize();
-            int         minHold        = ResolveMinHoldFrames();
-            int         maxHold        = ResolveMaxHoldFrames(minHold);
+            float       maxHold        = ResolveMaxHoldSeconds();
+            float       minHold        = ResolveMinHoldSeconds(maxHold);
             Transform[] excludeBones   = ResolveExcludeBones();
             string[]    excludeKeywords = ResolveExcludeKeywords();
             OnTwosProfile.BoneOverride[] overrides = ResolveBoneOverrides();
@@ -182,8 +213,8 @@ namespace OnTwos.Runtime
                 float boneTau = ResolveTauForBone(_bones[i], tau, overrides);
                 _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
                 _schedulers[i].CandidatesPerSegment = candidates;
-                _schedulers[i].MinHoldFrames = minHold;
-                _schedulers[i].MaxHoldFrames = maxHold;
+                _schedulers[i].MinHoldSeconds = minHold;
+                _schedulers[i].MaxHoldSeconds = maxHold;
                 _rawRotations[i] = _bones[i].localRotation;
             }
 
@@ -199,7 +230,27 @@ namespace OnTwos.Runtime
                         "SmearReferenceBone is not under BoneRoot. Smear disabled.");
             }
 
+            // Seed the visual offset from the rig's starting position. Validated here
+            // rather than trusted, because an offset root that isn't actually an ancestor
+            // of the bones would silently move nothing.
+            if (VisualOffsetRoot != null)
+            {
+                if (searchRoot == VisualOffsetRoot || searchRoot.IsChildOf(VisualOffsetRoot))
+                {
+                    _heldWorldPos      = VisualOffsetRoot.position;
+                    _visualOffsetReady = true;
+                }
+                else
+                {
+                    Debug.LogWarning(
+                        $"[CrunchyRagdoll/AnimationStepper] {gameObject.name}: " +
+                        "VisualOffsetRoot is not an ancestor of the bone root, so offsetting " +
+                        "it would not move the rig. Visual offset disabled.");
+                }
+            }
+
             _startTime = Time.time;
+            _lastPositionSnapTime = 0f;
             _ready     = true;
 
             int active = 0;
@@ -207,7 +258,8 @@ namespace OnTwos.Runtime
             Debug.Log(
                 $"[CrunchyRagdoll/AnimationStepper] {gameObject.name} — " +
                 $"{active}/{_bones.Length} bones active, τ={tau}°, n={candidates}, mode={Mode}, " +
-                $"cadence={minHold}-{maxHold}{(minHold == maxHold ? " (locked)" : " (adaptive)")}");
+                $"cadence={1f / maxHold:F1} poses/sec" +
+                $"{(Mathf.Approximately(minHold, maxHold) ? " (locked)" : $" (jitter to {1f / Mathf.Max(minHold, 1e-4f):F1})")}");
         }
 
         private void LateUpdate()
@@ -218,8 +270,8 @@ namespace OnTwos.Runtime
             float t = Time.time - _startTime;
             float liveTau = ResolveTau();
             int liveCandidates = ResolveCandidates();
-            int liveMinHold = ResolveMinHoldFrames();
-            int liveMaxHold = ResolveMaxHoldFrames(liveMinHold);
+            float liveMaxHold = ResolveMaxHoldSeconds();
+            float liveMinHold = ResolveMinHoldSeconds(liveMaxHold);
             var overrides = ResolveBoneOverrides();
 
             // The null check here handles both AnySource mode (_stateWatcher is never
@@ -259,8 +311,8 @@ namespace OnTwos.Runtime
                 // take effect immediately.
                 _schedulers[i].Tau = boneTau;
                 _schedulers[i].CandidatesPerSegment = boneCandidates;
-                _schedulers[i].MinHoldFrames = liveMinHold;
-                _schedulers[i].MaxHoldFrames = liveMaxHold;
+                _schedulers[i].MinHoldSeconds = liveMinHold;
+                _schedulers[i].MaxHoldSeconds = liveMaxHold;
 
                 Quaternion held = _schedulers[i].Update(t, raw);
                 _rawRotations[i] = raw;
@@ -269,6 +321,8 @@ namespace OnTwos.Runtime
                 if (!culled)
                     bone.localRotation = held;
             }
+
+            UpdateVisualOffset(t, liveMaxHold);
 
             if (_smearBoneIndex >= 0)
             {
@@ -310,11 +364,78 @@ namespace OnTwos.Runtime
                 _rawRotations[i] = _bones[i].localRotation;
                 _schedulers[i].Reset(_bones[i].localRotation);
             }
+
+            // Re-phase the position hold with the schedulers. Leaving it running would
+            // put position and rotation on opposite halves of the beat after a state
+            // transition, which reads as the rig creeping between steps.
+            FlushVisualOffset();
+            _lastPositionSnapTime = Time.time - _startTime;
         }
 
         public void Deactivate()
         {
             enabled = false;
+        }
+
+        // -----------------------------------------------------------------
+        // Visual offset
+        // -----------------------------------------------------------------
+
+        /// <summary>
+        /// Holds the rig's world position for the duration of each step, so a planted
+        /// foot stays planted while the CharacterController keeps advancing smoothly.
+        ///
+        /// Runs on the same clock and the same interval as the bone schedulers, using
+        /// the <paramref name="stepInterval"/> they were just given. That shared timebase
+        /// is why this lives inside AnimationStepper rather than in its own component —
+        /// a separate MonoBehaviour would keep its own clock and drift out of phase with
+        /// the rotation cadence, so position and rotation would release on different
+        /// frames and the foot would still creep.
+        /// </summary>
+        private void UpdateVisualOffset(float t, float stepInterval)
+        {
+            if (!_visualOffsetReady || VisualOffsetRoot == null) return;
+
+            Vector3 truePos = transform.position;
+
+            // Release on the beat, or early if the rig has drifted too far from where it
+            // actually is. The distance check is a safety bound only: driving position
+            // from distance alone cannot produce a stable cadence, because the threshold's
+            // meaning depends on how fast the character happens to be moving.
+            bool onBeat    = t - _lastPositionSnapTime >= stepInterval;
+            bool tooFar    = MaxVisualOffset <= 0f ||
+                             (truePos - _heldWorldPos).sqrMagnitude > MaxVisualOffset * MaxVisualOffset;
+
+            if (onBeat || tooFar)
+            {
+                _heldWorldPos = truePos;
+
+                if (onBeat && stepInterval > 1e-6f)
+                {
+                    // Advance on the fixed grid so the beat can't drift, matching
+                    // HoldFrameScheduler's forceSnap bookkeeping.
+                    _lastPositionSnapTime += Mathf.Floor((t - _lastPositionSnapTime) / stepInterval) * stepInterval;
+                    if (t - _lastPositionSnapTime >= stepInterval) _lastPositionSnapTime = t;
+                }
+                else if (tooFar)
+                {
+                    _lastPositionSnapTime = t;
+                }
+            }
+
+            VisualOffsetRoot.position = _heldWorldPos;
+        }
+
+        /// <summary>
+        /// Re-seed the visual offset to the rig's true position. Call after teleporting
+        /// the character, otherwise the rig visibly slides from the old location to the
+        /// new one over the next step instead of arriving with it.
+        /// </summary>
+        public void FlushVisualOffset()
+        {
+            if (!_visualOffsetReady || VisualOffsetRoot == null) return;
+            _heldWorldPos = transform.position;
+            VisualOffsetRoot.position = _heldWorldPos;
         }
 
         // -----------------------------------------------------------------
@@ -348,20 +469,22 @@ namespace OnTwos.Runtime
         private string[] ResolveExcludeKeywords()
             => Profile != null ? Profile.LiveAnimation.ExcludeKeywords : ExcludeKeywords;
 
-        // Cadence bounds. HoldFrameScheduler defaults to 0 / int.MaxValue (pure Tau-gated
-        // adaptive stepping); feeding real values here is what turns on the frame-level
-        // cadence. When min == max, HoldFrameScheduler.Update()'s forceSnap branch is
-        // evaluated before the Tau-gated allowSnap branch, so every bone snaps on exactly
-        // the same frame — all counters start at 0 together in Start(), so the whole rig
-        // stays in lockstep. That is the "animating on twos" case (min == max == 2).
-        private int ResolveMinHoldFrames()
-            => Mathf.Max(1, Profile != null ? Profile.LiveAnimation.MinHoldFrames : MinHoldFrames);
+        // Cadence bounds, in seconds. HoldFrameScheduler defaults to 0 / +Infinity
+        // (pure Tau-gated adaptive stepping); feeding real values here is what turns
+        // the cadence on. MaxHoldSeconds is the step interval; MinHoldSeconds opens a
+        // window below it in which Tau may snap early. With jitter 0 the two are equal,
+        // forceSnap always wins, and every bone shares one beat.
+        private float ResolveMaxHoldSeconds()
+        {
+            float rate = Profile != null ? Profile.LiveAnimation.StepRate : StepRate;
+            return 1f / Mathf.Max(0.01f, rate);
+        }
 
-        // Clamped to >= min so an inverted profile setting degrades to a locked cadence
-        // rather than forcing a snap every single frame (which would disable stepping).
-        private int ResolveMaxHoldFrames(int minHoldFrames)
-            => Mathf.Max(minHoldFrames,
-                         Profile != null ? Profile.LiveAnimation.MaxHoldFrames : MaxHoldFrames);
+        private float ResolveMinHoldSeconds(float maxHoldSeconds)
+        {
+            float jitter = Profile != null ? Profile.LiveAnimation.CadenceJitter : CadenceJitter;
+            return maxHoldSeconds * (1f - Mathf.Clamp01(jitter));
+        }
 
         private OnTwosProfile.BoneOverride[] ResolveBoneOverrides()
             => Profile != null ? Profile.BoneOverrides : Array.Empty<OnTwosProfile.BoneOverride>();
@@ -390,9 +513,13 @@ namespace OnTwos.Runtime
             if (previousRaw == default)
                 return 0f;
 
-            // 45 degrees maps to intensity 1; smaller changes keep the curve in the
-            // lower end where ResponseCurve can soften stepping on slower motion.
-            return Mathf.Clamp01(Quaternion.Angle(previousRaw, currentRaw) / 45f);
+            // Degrees per SECOND, not per frame. Dividing raw per-frame delta by a
+            // constant made this framerate-dependent: the same motion read ~2x higher
+            // at 30fps than at 60, so ResponseCurve returned a different multiplier and
+            // a bake (clip rate) could never match runtime (render rate).
+            float dt = Mathf.Max(Time.deltaTime, 1e-5f);
+            float degreesPerSecond = Quaternion.Angle(previousRaw, currentRaw) / dt;
+            return Mathf.Clamp01(degreesPerSecond / Mathf.Max(1f, MaxDegreesPerSecond));
         }
 
         // ExcludeBones are Transform[] references — scene-object references that cannot

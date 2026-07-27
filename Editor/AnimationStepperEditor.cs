@@ -8,6 +8,7 @@ namespace OnTwos.Editor
     public sealed class AnimationStepperEditor : UnityEditor.Editor
     {
         private bool _foldCrunch       = true;
+        private bool _foldOffset       = true;
         private bool _foldCadence      = true;
         private bool _foldCandidates   = true;
         private bool _foldFilters      = false;
@@ -30,11 +31,12 @@ namespace OnTwos.Editor
             bool hasProfile      = stepper.Profile != null;
             bool noSmearBone     = stepper.SmearReferenceBone == null;
             bool cullingEnabled  = stepper.EnableVisibilityCulling;
+            bool hasOffsetRoot   = stepper.VisualOffsetRoot != null;
 
-            int minHold = hasProfile ? stepper.Profile.LiveAnimation.MinHoldFrames : stepper.MinHoldFrames;
-            int maxHold = Mathf.Max(minHold,
-                hasProfile ? stepper.Profile.LiveAnimation.MaxHoldFrames : stepper.MaxHoldFrames);
-            bool cadenceLocked = minHold == maxHold;
+            float stepRate = hasProfile ? stepper.Profile.LiveAnimation.StepRate : stepper.StepRate;
+            float jitter   = Mathf.Clamp01(hasProfile
+                ? stepper.Profile.LiveAnimation.CadenceJitter : stepper.CadenceJitter);
+            bool cadenceLocked = jitter <= 0f;
 
             // Mode first — it changes what the rest of the inspector means.
             EditorGUILayout.PropertyField(serializedObject.FindProperty("Mode"));
@@ -81,22 +83,52 @@ namespace OnTwos.Editor
             }
             EditorGUILayout.EndFoldoutHeaderGroup();
 
+            _foldOffset = EditorGUILayout.BeginFoldoutHeaderGroup(_foldOffset, "Visual Offset (foot planting)");
+            if (_foldOffset)
+            {
+                EditorGUI.indentLevel++;
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("VisualOffsetRoot"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("MaxVisualOffset"));
+
+                if (!hasOffsetRoot)
+                {
+                    EditorGUILayout.HelpBox(
+                        "No offset root — the rig's world position is not held, so feet will " +
+                        "slide while the character moves. Rotation stepping still works.",
+                        MessageType.None);
+
+                    if (!Application.isPlaying && GUILayout.Button("Create Visual Offset Root"))
+                        CreateVisualOffsetRoot(stepper);
+                }
+                else
+                {
+                    EditorGUILayout.HelpBox(
+                        "The rig is offset from its colliders by up to Max Visual Offset. " +
+                        "Colliders do not move, so hits resolve against the collider rather " +
+                        "than the visible mesh — keep this small in a shooter.",
+                        MessageType.None);
+                }
+                EditorGUI.indentLevel--;
+            }
+            EditorGUILayout.EndFoldoutHeaderGroup();
+
             _foldCadence = EditorGUILayout.BeginFoldoutHeaderGroup(_foldCadence, "Cadence");
             if (_foldCadence)
             {
                 EditorGUI.indentLevel++;
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("MinHoldFrames"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("MaxHoldFrames"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("StepRate"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("CadenceJitter"));
 
-                // minHold / maxHold were resolved at the top of the pass and reflect the
+                // stepRate / jitter were resolved at the top of the pass and reflect the
                 // profile whenever one is assigned, not the fallback fields above.
                 EditorGUILayout.HelpBox(
                     cadenceLocked
-                        ? $"Locked cadence: every bone snaps together every {minHold} frames — " +
-                          $"{CadenceName(minHold)}. Tau no longer affects timing in this mode."
-                        : $"Adaptive cadence ({minHold}-{maxHold} frames). Bones snap independently " +
-                          "once Tau is crossed, so they drift out of sync with each other. " +
-                          "Set Min equal to Max for a metronomic, in-lockstep look.",
+                        ? $"Locked cadence: {stepRate:F1} poses/sec — {CadenceName(stepRate)}. " +
+                          "Every bone snaps on the same beat. Identical at any framerate, " +
+                          "and a baked clip will match this."
+                        : $"Jittered cadence: {stepRate:F1} poses/sec with {jitter:P0} drift. " +
+                          "Bones crossing Tau early snap ahead of the beat and desynchronise. " +
+                          "Set Cadence Jitter to 0 for a metronomic, in-lockstep look.",
                     cadenceLocked ? MessageType.Info : MessageType.Warning);
                 EditorGUI.indentLevel--;
             }
@@ -167,14 +199,65 @@ namespace OnTwos.Editor
             serializedObject.ApplyModifiedProperties();
         }
 
-        // Traditional animation shorthand for a locked hold length.
-        private static string CadenceName(int holdFrames) => holdFrames switch
+        /// <summary>
+        /// Inserts a GameObject between the stepper's transform and the rig root, and
+        /// assigns it as the visual offset root.
+        ///
+        /// Author-time only, deliberately. Doing this at runtime would reparent the rig
+        /// out from under any script, animation event or IK rig already holding a
+        /// reference to a bone's ancestor chain.
+        /// </summary>
+        private static void CreateVisualOffsetRoot(AnimationStepper stepper)
         {
-            1 => "on ones (no stepping)",
-            2 => "on twos",
-            3 => "on threes",
-            4 => "on fours",
-            _ => $"on {holdFrames}s"
-        };
+            Transform rigRoot = stepper.BoneRoot != null ? stepper.BoneRoot : stepper.transform;
+
+            if (rigRoot == stepper.transform)
+            {
+                EditorUtility.DisplayDialog(
+                    "Cannot create offset root",
+                    "BoneRoot resolves to the stepper's own transform, so there is nothing to " +
+                    "offset independently of the collider.\n\nAssign BoneRoot to the rig's root " +
+                    "bone (e.g. the Armature or Hips) first, then try again.",
+                    "OK");
+                return;
+            }
+
+            var offset = new GameObject("VisualOffset");
+            Undo.RegisterCreatedObjectUndo(offset, "Create Visual Offset Root");
+
+            Transform originalParent = rigRoot.parent;
+            Undo.SetTransformParent(offset.transform, originalParent, "Create Visual Offset Root");
+            offset.transform.localPosition = Vector3.zero;
+            offset.transform.localRotation = Quaternion.identity;
+            offset.transform.localScale    = Vector3.one;
+
+            Undo.SetTransformParent(rigRoot, offset.transform, "Create Visual Offset Root");
+
+            Undo.RecordObject(stepper, "Create Visual Offset Root");
+            stepper.VisualOffsetRoot = offset.transform;
+            EditorUtility.SetDirty(stepper);
+
+            Selection.activeGameObject = offset;
+        }
+
+        // Traditional animation shorthand. The classical terms are relative to 24fps
+        // film, so the rate is converted back to "held N frames of 24" to name it.
+        private static string CadenceName(float posesPerSecond)
+        {
+            if (posesPerSecond <= 0f) return "invalid";
+            float heldFramesAt24 = 24f / posesPerSecond;
+            int n = Mathf.RoundToInt(heldFramesAt24);
+            if (Mathf.Abs(heldFramesAt24 - n) > 0.15f)
+                return $"~{heldFramesAt24:F1} frames of 24";
+
+            return n switch
+            {
+                1 => "on ones (no stepping)",
+                2 => "on twos",
+                3 => "on threes",
+                4 => "on fours",
+                _ => $"on {n}s"
+            };
+        }
     }
 }

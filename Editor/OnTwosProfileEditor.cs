@@ -39,7 +39,11 @@ namespace OnTwos.Editor
             // measured. GUILayout then throws "You can't nest Foldout Headers, end it
             // with EndFoldoutHeader" and truncates every control after that point —
             // which is what hid ExcludeKeywords and BoneOverrides.
-            bool ragdollHoldWarning = profile.Ragdoll.MaxHoldFrames < profile.Ragdoll.MinHoldFrames;
+            // The ragdoll path is driven from FixedUpdate, so it cannot produce more
+            // poses per second than the physics tick rate. Asking for a rate near or
+            // above it silently disables stepping — every tick forces a snap.
+            float physicsRate = 1f / Mathf.Max(Time.fixedDeltaTime, 1e-5f);
+            bool ragdollHoldWarning = profile.Ragdoll.StepRate > physicsRate * 0.5f;
             bool settlingThresholdWarning = profile.Settling.WakeVelocityThreshold <= profile.Settling.SettleVelocityThreshold;
 
             DrawProfileHeader();
@@ -68,7 +72,11 @@ namespace OnTwos.Editor
                 EditorGUI.indentLevel++;
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Ragdoll"), true);
                 if (ragdollHoldWarning)
-                    EditorGUILayout.HelpBox("Max Hold Frames < Min Hold Frames — every frame will force a snap.", MessageType.Warning);
+                    EditorGUILayout.HelpBox(
+                        $"Step Rate is high relative to the {physicsRate:F0} Hz physics tick. " +
+                        "Ragdolls step from FixedUpdate, so a rate near the tick rate snaps " +
+                        "almost every tick and no stepping is visible. Try 12.",
+                        MessageType.Warning);
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();

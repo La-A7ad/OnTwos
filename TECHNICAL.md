@@ -85,10 +85,10 @@ Two entry points, sharing one algorithmic core.
 
 Both allocate **one `HoldFrameScheduler` per bone**, and each scheduler owns
 entirely independent state — its own sample ring buffer, its own spline fits, its
-own hold counter. No bone's decision is coupled to another's. This is what allows
+own hold clock. No bone's decision is coupled to another's. This is what allows
 different limbs to run at different cadences, and it's also what makes the locked
-mode work: independence plus a shared frame counter produces exact lockstep,
-without any explicit synchronisation.
+mode work: independence plus a shared timebase produces exact lockstep, without
+any explicit synchronisation.
 
 The supporting cast:
 
@@ -117,7 +117,7 @@ For one bone, one frame, inside `HoldFrameScheduler.Update(time, rotation)`:
 
 ```
   1. Append (time, rotation) to a fixed-capacity ring buffer.
-  2. Increment the frames-since-snap counter.
+  2. Measure elapsed time since the last snap.
   3. If fewer than 4 samples exist, pass the pose through unmodified.
   4. Every 10th frame: refit the spline and locate all motion extrema
      over the current window.  (Cached and reused on the other 9.)
@@ -126,7 +126,7 @@ For one bone, one frame, inside `HoldFrameScheduler.Update(time, rotation)`:
      ROTATION-ANGLE intervals (not equal time).
   7. Sort candidates chronologically.
   8. Decide:
-       forceSnap?  -> snap to the newest pose, reset counter
+       forceSnap?  -> snap to the newest pose, advance the beat
        allowSnap?  -> walk candidates; snap wherever angular deviation
                       from the currently-held pose exceeds tau
        otherwise   -> hold
@@ -382,7 +382,7 @@ for t in candidates (chronological):
     q = evaluate(t)
     if angle(held, q) > tau:
         held = q                 # snap
-        framesSinceSnap = 0
+        lastSnapTime = t         # stamp the candidate's own time
 ```
 
 Note it compares against the *currently held* pose, not the previous sample. That
@@ -401,50 +401,71 @@ algorithm with the deepest prior art — see §8.
 
 ### 4.6 Cadence locking
 
-`MinHoldFrames` / `MaxHoldFrames`
+`StepRate` / `CadenceJitter`
 
 The τ gate alone is *adaptive*: each bone snaps when its own motion warrants it.
 That produces organic results but not the metronomic beat that reads as
 traditional "on twos", because every bone is on its own schedule and the rig
 never lands on a shared frame.
 
-Two frame counters constrain it:
+Two time bounds constrain it, derived from the user-facing controls:
 
-- **`MinHoldFrames`** — a floor. No snap may occur within N frames of the last
-  one, regardless of τ. Suppresses jitter on fast motion.
-- **`MaxHoldFrames`** — a ceiling. After N frames, snap regardless of τ.
-  Prevents a frozen pose during slow or near-static motion.
+```
+MaxHoldSeconds = 1 / StepRate                          # the step interval
+MinHoldSeconds = MaxHoldSeconds · (1 − CadenceJitter)  # earliest a snap may occur
+```
+
+- **`MinHoldSeconds`** — a floor. No snap within this window, regardless of τ.
+  Suppresses jitter on fast motion.
+- **`MaxHoldSeconds`** — a ceiling. Snap after it regardless of τ. Prevents a
+  frozen pose during slow or near-static motion.
+
+**Why seconds and not tick counts.** Counting `Update()` calls makes the cadence
+depend on whoever drives the scheduler. `AnimationStepper` ticks once per rendered
+frame, so "hold 2 ticks" is 72 poses/sec at 144 fps but 15 at 30 fps — a 4.8×
+swing in the signature look across ordinary hardware. `RagdollStepper` ticks on the
+fixed 50 Hz physics clock, and the bake window ticks once per clip frame; the same
+setting meant three different things. All three already pass a real timestamp into
+`Update()`, so gating on elapsed time makes one `StepRate` mean the same thing
+everywhere, and makes a baked clip match what Play mode previewed.
 
 The evaluation order is load-bearing:
 
 ```
-forceSnap = framesSinceSnap >= MaxHoldFrames
-allowSnap = framesSinceSnap >= MinHoldFrames
+heldFor   = time − lastSnapTime
+forceSnap = heldFor >= MaxHoldSeconds
+allowSnap = heldFor >= MinHoldSeconds
 
 if forceSnap:        snap to newest pose        # checked FIRST
 elif allowSnap:      walk candidates against tau
 else:                hold
 ```
 
-Because `forceSnap` is tested before the τ-gated branch, **setting
-`Min == Max == N` bypasses τ entirely** and produces an exact N-frame cadence.
-Every scheduler's counter is initialised to zero in the same `Start()` call, so
-all bones share a phase and snap on precisely the same frames. `2` gives
-animation on twos; `3` on threes.
+Because `forceSnap` is tested before the τ-gated branch, **`CadenceJitter = 0`
+makes the two bounds equal and bypasses τ entirely**, producing an exact cadence.
+Every scheduler seeds `lastSnapTime` from the same timestamp in the same
+`Start()`/`Reset()` pass, so all bones share a phase and snap on precisely the same
+frames. On snap, the timestamp advances by whole step intervals rather than being
+assigned the current time, so the beat stays locked to a fixed grid instead of
+drifting forward by the frame overshoot each step.
 
-When `Min < Max` the gap between them is a window in which a bone *may* snap
-early via τ. Bones with fast motion will; bones with slow motion won't. The rig
-desynchronises. This reads as stutter when unintended — but it is also a
-legitimate deliberate effect (call it *cadence jitter*), and it's the same idea
-as Spider-Punk's jacket running on a different rate from his body.
+`StepRate = 12` is the classic "on twos" — 24 fps film with each drawing held two
+frames. `8` is on threes.
 
-**An honest note on what locking costs.** When `Min == Max`, `forceSnap` assigns
-`held = evaluate(tEnd)`, where `tEnd` is the timestamp of the sample just added —
-the newest knot. Since PCHIP interpolates its knots exactly, this returns the raw
-incoming rotation. In locked mode the output is therefore *exactly* "resample the
-raw pose every N frames", and the spline, extrema detection and arc-length
-machinery contribute nothing to the result. All of that sophistication earns its
-keep only in the adaptive regime (`Min < Max`), where τ decides both **whether**
+Raising `CadenceJitter` opens a window in which a bone *may* snap early via τ.
+Bones with fast motion will; bones with slow motion won't. The rig desynchronises.
+This reads as stutter when unintended — but it is also a legitimate deliberate
+effect, and it's the same idea as Spider-Punk's jacket running on a different rate
+from his body.
+
+**An honest note on what locking costs.** With `CadenceJitter = 0`, `forceSnap`
+assigns `held = evaluate(tEnd)`, where `tEnd` is the timestamp of the sample just
+added — the newest knot. Since PCHIP interpolates its knots exactly, this returns
+the raw incoming rotation. In locked mode the output is therefore *exactly*
+"resample the raw pose every 1/StepRate seconds", and the spline, extrema detection
+and arc-length machinery contribute nothing to the result. All of that
+sophistication earns its keep only when jitter is above zero, where τ decides both
+**whether**
 and **where** to snap. This is worth knowing before concluding the algorithm
 isn't doing anything: in the most common configuration, it isn't.
 
@@ -727,7 +748,8 @@ Stated plainly, because a technical document that omits them isn't useful.
 **Algorithmic**
 
 - **Locked cadence bypasses the mathematics.** As established in §4.6, when
-  `Min == Max` the output is exactly "resample every N frames" and the spline,
+  `CadenceJitter = 0` the output is exactly "resample every 1/StepRate seconds"
+  and the spline,
   extrema and arc-length work contribute nothing. Since locked cadence is the
   configuration that produces the classic look, the sophisticated path is not the
   one most users will run.
@@ -736,9 +758,10 @@ Stated plainly, because a technical document that omits them isn't useful.
   that follow, so they're placed against the previous frame's LUT. At animation
   sample rates the error is small, but it is a real off-by-one-frame in the
   reparameterisation.
-- **Motion intensity is framerate-dependent.** `ComputeMotionIntensity` divides
-  degrees-per-*frame* by a fixed constant, so the `ResponseCurve` input shifts with
-  framerate. It should be degrees-per-second.
+- **Chain coherence is not modelled.** Each bone decides independently. A locked
+  cadence moves the whole chain together so this rarely shows, but with jitter above
+  zero a parent and child can snap on different frames, briefly bending a limb in a
+  way the source motion never did.
 
 **Performance**
 
@@ -751,10 +774,11 @@ Stated plainly, because a technical document that omits them isn't useful.
 
 **Unbuilt features**
 
-- **Runtime position stepping.** `PositionTau` is honoured by the bake window and
-  by `RagdollStepper`, but `AnimationStepper` never reads it at runtime — rotation
-  only. Runtime position stepping needs a visual-proxy architecture for the
-  animation path, mirroring the ragdoll one.
+- **Runtime position stepping (bone-level).** `LiveAnimation.PositionTau` is
+  bake-only; `RagdollStepper` uses the separate `Ragdoll.RagdollPosTau`. The
+  animation path steps rotation only at the bone level. Character-level position
+  holding is handled by `AnimationStepper.VisualOffsetRoot`, which solves foot
+  sliding; per-bone position stepping at runtime remains unbuilt.
 - **Per-bone smear.** Only the whole-mesh version exists, which can produce a rigid
   slide but not a true smear (§6). The per-bone design — per-bone displacement
   vectors from bone-tip offsets, a `ComputeBuffer` sized to bone count, and

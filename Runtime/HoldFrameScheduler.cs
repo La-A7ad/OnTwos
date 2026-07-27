@@ -16,12 +16,21 @@ namespace OnTwos.Runtime.Math
     ///   4. Walk candidates through the deviation threshold.
     ///   5. Return the current held pose.
     ///
-    /// MinHoldFrames / MaxHoldFrames:
-    ///   MinHoldFrames prevents snapping more often than once per N frames (jitter
-    ///   guard on fast motion). MaxHoldFrames forces a snap after N frames even when
+    /// MinHoldSeconds / MaxHoldSeconds:
+    ///   MinHoldSeconds prevents snapping more often than once per N seconds (jitter
+    ///   guard on fast motion). MaxHoldSeconds forces a snap after N seconds even when
     ///   deviation hasn't crossed Tau (prevents frozen pose on slow / idle motion).
-    ///   Both are frame-level counters, not candidate-level — they operate on the
-    ///   whole Update() call, not on individual candidates within one walk.
+    ///   Both operate on the whole Update() call, not on individual candidates
+    ///   within one walk.
+    ///
+    ///   These are deliberately measured in SECONDS, not Update() calls. Counting
+    ///   ticks makes the cadence depend on whoever is driving the scheduler:
+    ///   AnimationStepper ticks once per rendered frame (so "hold 2 ticks" means
+    ///   72 poses/sec at 144fps but 15 at 30fps), RagdollStepper ticks on the fixed
+    ///   50Hz physics clock, and the bake window ticks once per clip frame. All three
+    ///   already pass a real timestamp into Update(), so gating on elapsed time makes
+    ///   one StepRate mean the same thing everywhere — and makes a baked clip match
+    ///   what Play mode previewed.
     /// </summary>
     public sealed class HoldFrameScheduler
     {
@@ -34,16 +43,17 @@ namespace OnTwos.Runtime.Math
         public float Tau;
 
         /// <summary>
-        /// Minimum Update() calls that must elapse between snaps.
+        /// Minimum seconds that must elapse between snaps.
         /// 0 = no minimum (default). Prevents sub-frame jitter on fast motion.
         /// </summary>
-        public int MinHoldFrames = 0;
+        public float MinHoldSeconds = 0f;
 
         /// <summary>
-        /// Maximum Update() calls before a snap is forced regardless of deviation.
-        /// int.MaxValue = never forced (default). Prevents frozen pose on slow motion.
+        /// Maximum seconds before a snap is forced regardless of deviation.
+        /// PositiveInfinity = never forced (default). Prevents a frozen pose on slow motion.
+        /// Set equal to MinHoldSeconds for an exact metronomic cadence.
         /// </summary>
-        public int MaxHoldFrames = int.MaxValue;
+        public float MaxHoldSeconds = float.PositiveInfinity;
 
         /// <summary>
         /// Arc-length candidates per monotone segment. Kept mutable so the profile's
@@ -56,7 +66,11 @@ namespace OnTwos.Runtime.Math
         }
 
         private int _nCandidates; // per monotone segment
-        private int _framesSinceSnap;      // frames elapsed since the last snap
+
+        // Timestamp of the last snap, in the caller's timebase. Stored as an absolute
+        // time rather than an accumulated delta so repeated addition can't drift over
+        // a long session. Negative means "no snap yet" (seeded on the first Update).
+        private float _lastSnapTime;
 
         // Extrema cache — recomputed every ExtremaInterval frames only.
         private List<float> _cachedExtrema = new List<float>();
@@ -76,7 +90,7 @@ namespace OnTwos.Runtime.Math
             CandidatesPerSegment = candidatesPerSegment;
             _held = Quaternion.identity;
             _windowStart = -1f;
-            _framesSinceSnap = 0;
+            _lastSnapTime = 0f;
         }
 
         /// <summary>
@@ -86,15 +100,16 @@ namespace OnTwos.Runtime.Math
         public Quaternion Update(float time, Quaternion boneRotation)
         {
             _sampler.Add(time, boneRotation);
-            _framesSinceSnap++;
 
             // First sample after construction or Reset — seed the window and held pose.
             if (_windowStart < 0f)
             {
                 _windowStart = time;
                 _held = boneRotation;
-                // Don't count the seed frame against MinHoldFrames.
-                _framesSinceSnap = 0;
+                // Start the hold clock here so the seed frame isn't counted against
+                // MinHoldSeconds. Every scheduler on a rig is seeded in the same
+                // Start()/Reset() pass, which is what puts the whole rig in phase.
+                _lastSnapTime = time;
                 return _held;
             }
 
@@ -143,15 +158,31 @@ namespace OnTwos.Runtime.Math
             }
             candidates.Sort();
 
-            // FIX (Bug C): enforce MinHoldFrames / MaxHoldFrames.
-            bool allowSnap = _framesSinceSnap >= MinHoldFrames;
-            bool forceSnap = MaxHoldFrames < int.MaxValue && _framesSinceSnap >= MaxHoldFrames;
+            // Cadence gate, in seconds of the caller's timebase.
+            float heldFor   = time - _lastSnapTime;
+            bool  allowSnap = heldFor >= MinHoldSeconds;
+            bool  forceSnap = !float.IsPositiveInfinity(MaxHoldSeconds) && heldFor >= MaxHoldSeconds;
 
+            // forceSnap is deliberately tested BEFORE the Tau-gated branch. When
+            // MinHoldSeconds == MaxHoldSeconds (CadenceJitter = 0) this branch always
+            // wins, Tau is bypassed for timing, and every bone snaps on exactly the
+            // same beat — the metronomic "on twos" case.
             if (forceSnap)
             {
-                // Force snap to the latest evaluated pose and reset the counter.
+                // Force snap to the latest evaluated pose and restart the hold clock.
                 _held = _sampler.Evaluate(tEnd);
-                _framesSinceSnap = 0;
+
+                // Advance by whole step intervals rather than assigning `time`, so the
+                // beat stays locked to a fixed grid instead of drifting forward by the
+                // frame overshoot every step. Guarded against a zero/denormal interval,
+                // and against a long stall (breakpoint, load hitch) producing a huge
+                // catch-up loop, by clamping to the current time.
+                if (MaxHoldSeconds > 1e-6f)
+                {
+                    _lastSnapTime += Mathf.Floor(heldFor / MaxHoldSeconds) * MaxHoldSeconds;
+                    if (time - _lastSnapTime >= MaxHoldSeconds) _lastSnapTime = time;
+                }
+                else _lastSnapTime = time;
             }
             else if (allowSnap)
             {
@@ -164,11 +195,14 @@ namespace OnTwos.Runtime.Math
                     if (Quaternion.Angle(_held, evaluated) > Tau)
                     {
                         _held = evaluated;
-                        _framesSinceSnap = 0;
+                        // Tau-driven snap: stamp the candidate's own time, not `time`.
+                        // The snap conceptually happened at t, and using it keeps the
+                        // next MinHoldSeconds window measured from the real event.
+                        _lastSnapTime = t;
                     }
                 }
             }
-            // else: MinHoldFrames not yet elapsed — return held without modification.
+            // else: MinHoldSeconds not yet elapsed — return held without modification.
 
             // Advance window — drop oldest portion to keep buffer fresh.
             _windowStart = _sampler.OldestTime;
@@ -189,7 +223,10 @@ namespace OnTwos.Runtime.Math
             _sampler.Clear();           // clear sample history — old frames cannot bleed in
             _held        = initialPose;
             _windowStart = -1f;
-            _framesSinceSnap         = 0;
+            // _lastSnapTime is re-seeded from the incoming timestamp on the next
+            // Update() (the _windowStart < 0 branch), because Reset has no timebase
+            // of its own. Resetting every scheduler together therefore re-phases the
+            // whole rig onto one beat.
             _framesSinceExtremaScan  = ExtremaInterval; // force rescan next Update
             _cachedExtrema.Clear();
         }

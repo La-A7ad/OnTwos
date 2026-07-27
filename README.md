@@ -96,8 +96,10 @@ For each tracked bone, every frame:
 3. Walk the spline forward using `DeviationThreshold` — emit a new "snap" when
    accumulated deviation (rotation degrees or position meters) exceeds τ, with
    candidate placements weighted by arc length.
-4. `HoldFrameScheduler` clamps the resulting snap rate to `[MinHoldFrames,
-   MaxHoldFrames]` so you never get sub-frame jitter or completely frozen output.
+4. `HoldFrameScheduler` gates the snap on elapsed **time**, from a `StepRate` in
+   poses per second (`12` = the classic "on twos"), so the cadence is identical
+   at any framerate. `CadenceJitter` sets how far bones may drift off that shared
+   beat — `0` locks the whole rig in step.
 5. Apply the chosen snap pose to the visible bones; everything else holds.
 
 For ragdolls, samples come from `Rigidbody` world transforms rather than

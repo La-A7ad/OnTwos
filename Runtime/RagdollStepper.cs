@@ -40,6 +40,11 @@ namespace OnTwos.Runtime
         public float Tau         = 12f;    // degrees of rotation before the proxy snaps
         public float PositionTau = 0.08f;  // world units of translation before the proxy snaps
 
+        [Range(30f, 1440f)]
+        [Tooltip("Rotation speed, in degrees per second, that maps to ResponseCurve input 1.0. " +
+                 "Only used when a Profile with a ResponseCurve is assigned.")]
+        public float MaxDegreesPerSecond = 360f;
+
         [Header("Physics settle")]
         public float SettleVelocityThreshold = 0.75f;
         public float SettleAngularThreshold  = 25f;   // deg/s
@@ -164,8 +169,8 @@ namespace OnTwos.Runtime
             float tau = ResolveTau();
             int candidates = Mathf.Clamp(ResolveCandidates(), 1, 4);
             int bufferSize = ResolveBufferSize();
-            int minHold = ResolveMinHoldFrames();
-            int maxHold = ResolveMaxHoldFrames(minHold);
+            float maxHold = ResolveMaxHoldSeconds();
+            float minHold = ResolveMinHoldSeconds(maxHold);
             var overrides = ResolveBoneOverrides();
             string[] excludeKeywords = ResolveExcludeKeywords();
 
@@ -193,8 +198,8 @@ namespace OnTwos.Runtime
                 float boneTau = ResolveTauForBody(rb.transform, tau, overrides);
                 _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
                 _schedulers[i].CandidatesPerSegment = candidates;
-                _schedulers[i].MinHoldFrames = minHold;
-                _schedulers[i].MaxHoldFrames = maxHold;
+                _schedulers[i].MinHoldSeconds = minHold;
+                _schedulers[i].MaxHoldSeconds = maxHold;
                 _schedulers[i].Reset(rb.rotation);
             }
         }
@@ -217,8 +222,8 @@ namespace OnTwos.Runtime
             float posTau  = ResolvePositionTau();
             var overrides = ResolveBoneOverrides();
             int liveCandidates = ResolveCandidates();
-            int liveMinHold = ResolveMinHoldFrames();
-            int liveMaxHold = ResolveMaxHoldFrames(liveMinHold);
+            float liveMaxHold = ResolveMaxHoldSeconds();
+            float liveMinHold = ResolveMinHoldSeconds(liveMaxHold);
 
             if (_trajectoryRecorder != null)
                 _trajectoryRecorder.Capture(_sourceBodies, t);
@@ -295,8 +300,8 @@ namespace OnTwos.Runtime
 
                 _schedulers[i].Tau = boneTau;
                 _schedulers[i].CandidatesPerSegment = boneCandidates;
-                _schedulers[i].MinHoldFrames = liveMinHold;
-                _schedulers[i].MaxHoldFrames = liveMaxHold;
+                _schedulers[i].MinHoldSeconds = liveMinHold;
+                _schedulers[i].MaxHoldSeconds = liveMaxHold;
 
                 Quaternion prevHeld = _heldRotations[i];
                 Quaternion newHeld  = _schedulers[i].Update(t, currentRot);
@@ -549,17 +554,24 @@ private int ResolveBufferSize()
 private int ResolveSnapshotBufferSize()
     => Profile != null ? Mathf.Max(2, Profile.Proxy.SnapshotBufferSize) : 120;
 
-// Cadence bounds, in physics frames. Profile-only by design — RagdollStepperEditor
-// directs the user to the profile's Ragdoll foldout for these. Without them the
-// schedulers keep HoldFrameScheduler's 0 / int.MaxValue defaults, which means the
-// Ragdoll Min/MaxHoldFrames settings have no effect at all.
-private int ResolveMinHoldFrames()
-    => Mathf.Max(1, Profile != null ? Profile.Ragdoll.MinHoldFrames : 2);
+// Cadence bounds, in seconds. Profile-only by design — RagdollStepperEditor directs
+// the user to the profile's Ragdoll foldout for these. Without them the schedulers
+// keep HoldFrameScheduler's 0 / +Infinity defaults and the cadence never engages.
+//
+// Seconds rather than physics ticks matters less here than on the animation path
+// (FixedUpdate already runs at a fixed rate), but it keeps one StepRate meaning the
+// same thing across both steppers and the bake window.
+private float ResolveMaxHoldSeconds()
+{
+    float rate = Profile != null ? Profile.Ragdoll.StepRate : 12f;
+    return 1f / Mathf.Max(0.01f, rate);
+}
 
-// Clamped to >= min so an inverted profile setting degrades to a locked cadence
-// rather than forcing a snap every physics frame (which would disable stepping).
-private int ResolveMaxHoldFrames(int minHoldFrames)
-    => Mathf.Max(minHoldFrames, Profile != null ? Profile.Ragdoll.MaxHoldFrames : 4);
+private float ResolveMinHoldSeconds(float maxHoldSeconds)
+{
+    float jitter = Profile != null ? Profile.Ragdoll.CadenceJitter : 0f;
+    return maxHoldSeconds * (1f - Mathf.Clamp01(jitter));
+}
 
 private bool ResolveHideSourceRenderers()
     => Profile != null ? Profile.Proxy.HideSourceRenderers : HideSourceRenderers;
@@ -597,7 +609,12 @@ private float ComputeMotionIntensity(int bodyIndex, Quaternion currentRaw)
         return 0f;
 
     Quaternion previousRaw = _rawRotations[bodyIndex];
-    return Mathf.Clamp01(Quaternion.Angle(previousRaw, currentRaw) / 45f);
+
+    // Degrees per SECOND — see AnimationStepper.ComputeMotionIntensity. Uses
+    // fixedDeltaTime because this path is driven from FixedUpdate.
+    float dt = Mathf.Max(Time.fixedDeltaTime, 1e-5f);
+    float degreesPerSecond = Quaternion.Angle(previousRaw, currentRaw) / dt;
+    return Mathf.Clamp01(degreesPerSecond / Mathf.Max(1f, MaxDegreesPerSecond));
 }
 
 private float ResolveSettleVelocity()

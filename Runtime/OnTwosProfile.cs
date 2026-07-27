@@ -47,13 +47,23 @@ namespace OnTwos.Runtime
         public class LiveAnimationSettings
         {
 
-            [Range(1, 30)]
-            [Tooltip("Minimum frames between snaps. Set close to MaxHoldFrames for a metronomic, PSX-style cadence.")]
-            public int MinHoldFrames = 3;
+            [Range(1f, 60f)]
+            [Tooltip("Cadence, in new poses per second. This is THE control for the stepped look.\n\n" +
+                     "12 = the classic 'on twos' (24fps film held 2 frames). 8 = on threes. " +
+                     "24+ = barely stepped.\n\n" +
+                     "Measured in time, not engine frames, so the look is identical at 30, 60 " +
+                     "or 144 fps — and a baked clip matches what Play mode previewed.")]
+            public float StepRate = 12f;
 
-            [Range(1, 30)]
-            [Tooltip("Maximum frames before a snap is forced regardless of deviation. Prevents frozen poses on slow motion.")]
-            public int MaxHoldFrames = 4;
+            [Range(0f, 1f)]
+            [Tooltip("How far bones may drift off the shared beat.\n\n" +
+                     "0 = locked metronome: every bone snaps on exactly the same frame. This is " +
+                     "the traditional look and the recommended default.\n\n" +
+                     "Above 0, a bone whose motion crosses Tau early may snap ahead of the beat, " +
+                     "so limbs desynchronise. 1 = fully Tau-driven, no shared beat at all. " +
+                     "Useful deliberately — Spider-Punk's jacket running on its own rate from " +
+                     "his body — but reads as stutter if you didn't mean it.")]
+            public float CadenceJitter = 0f;
 
             [Range(0.5f, 45f)]
             [Tooltip("Crunchiness threshold for the live animation stepper, in degrees. " +
@@ -62,13 +72,17 @@ namespace OnTwos.Runtime
             public float AnimTau = 5f;
 
             [Range(0f, 0.5f)]
-            [Tooltip("World-units (metres) of translation before a stepped position snaps. " +
-                     "0 = position stepping disabled (rotation-only stepping, the default). " +
-                     "0.02 = subtle. 0.08 = obvious. Used by the bake window to write " +
-                     "localPosition curves, and by the runtime AnimationStepper when its " +
-                     "visual proxy is enabled. Counters foot sliding during locomotion: " +
-                     "when the character's position holds along with rotation, the foot " +
-                     "stays planted relative to the world. See DOCUMENTATION.md.")]
+            [Tooltip("BAKE-TIME ONLY. World-units (metres) of bone translation before a " +
+                     "stepped position snaps in a baked clip. 0 = rotation-only (default). " +
+                     "0.02 = subtle, 0.08 = obvious.\n\n" +
+                     "Read by the Bake Clip window to write stepped localPosition curves. " +
+                     "The runtime AnimationStepper does NOT read this — it steps rotation " +
+                     "only.\n\n" +
+                     "This does NOT fix foot sliding. Sliding comes from the character's " +
+                     "WORLD position advancing while leg rotations are held, and a clip only " +
+                     "drives bone-local transforms. Use AnimationStepper's VisualOffsetRoot " +
+                     "for that. For runtime physics position stepping see Ragdoll > " +
+                     "RagdollPosTau. See BAKING.md.")]
             public float PositionTau = 0f;
 
             [Range(1, 4)]
@@ -97,13 +111,17 @@ namespace OnTwos.Runtime
                      "0.05 = subtle. 0.15 = obvious. Scale with your rig's world-space size.")]
             public float RagdollPosTau = 0.08f;
 
-            [Range(1, 30)]
-            [Tooltip("Minimum physics frames to hold a pose before snapping is allowed.")]
-            public int MinHoldFrames = 2;
+            [Range(1f, 60f)]
+            [Tooltip("Ragdoll cadence, in new poses per second. 12 = classic 'on twos'.\n\n" +
+                     "Independent of the live-animation StepRate so a dying character can " +
+                     "step at a different rate than a walking one.")]
+            public float StepRate = 12f;
 
-            [Range(1, 30)]
-            [Tooltip("Maximum physics frames before forcing a snap regardless of deviation.")]
-            public int MaxHoldFrames = 4;
+            [Range(0f, 1f)]
+            [Tooltip("0 = every tracked body snaps on the same beat (recommended). " +
+                     "Above 0, bodies whose motion crosses Tau early snap ahead of it. " +
+                     "On a ragdoll a little jitter can read as loose, flailing weight.")]
+            public float CadenceJitter = 0f;
         }
 
         [Serializable]
@@ -157,32 +175,5 @@ namespace OnTwos.Runtime
             public float TauOverride;
         }
 
-        [Serializable]
-        public class ThresholdRule
-        {
-            [Tooltip("Optional bone-name filter; empty means apply to all.")]
-            public string NameContains;
-
-            [Tooltip("Rotation degrees deviation threshold.")]
-            public float RotationTau;
-
-            [Tooltip("Position delta threshold (metres).")]
-            public float PositionTau;
-        }
-
-        [Serializable]
-        public class CurveBinding
-        {
-            public enum Target
-            {
-                Tau,
-                HoldFrames,
-                CandidateCount,
-                SnapAggressiveness
-            }
-
-            public Target          ParameterTarget;
-            public AnimationCurve  Curve = AnimationCurve.Linear(0f, 1f, 1f, 1f);
-        }
     }
 }

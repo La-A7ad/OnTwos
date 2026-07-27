@@ -58,12 +58,20 @@ Typical values:
 | 12° | Moderate — clearly stepped, not distracting |
 | 30° | Heavy — very obvious stop-motion |
 
-### Hold frames
+### Cadence
 
-`MinHoldFrames` and `MaxHoldFrames` clamp how often snaps can occur regardless
-of deviation. `MinHoldFrames` prevents sub-frame jitter on fast motion.
-`MaxHoldFrames` forces a snap even when the motion hasn't crossed τ, ensuring
-the pose never fully freezes on slow or idle sections.
+`StepRate` is how many new poses appear per second, and it is the main control
+for the stepped look. `12` is the classic "on twos" — 24fps film with each
+drawing held two frames. `8` is on threes.
+
+It is measured in **time**, not engine frames, so the look is identical at 30,
+60 or 144 fps, and a baked clip matches what Play mode previewed.
+
+`CadenceJitter` controls how far bones may drift off that shared beat. `0` (the
+default) locks every bone to the same frame — the traditional look. Above `0`, a
+bone whose motion crosses τ early snaps ahead of the beat and limbs
+desynchronise; `1` removes the shared beat entirely and leaves stepping purely
+τ-driven.
 
 ### PCHIP spline
 
@@ -175,8 +183,8 @@ object — the term refers to the stepping technique, not a specific rig type.
 |---|---|---|
 | `RagdollTau` | `12` | Degrees of rotation before the proxy snaps. |
 | `RagdollPosTau` | `0.08` | Metres of translation before the proxy snaps. Scale this with your object's world-space size. |
-| `MinHoldFrames` | `2` | Minimum physics frames to hold before a snap is allowed. |
-| `MaxHoldFrames` | `4` | Maximum physics frames before forcing a snap regardless of deviation. |
+| `StepRate` | `12` | Ragdoll cadence in new poses per second. Independent of the live-animation rate. |
+| `CadenceJitter` | `0` | `0` = every body snaps on the same beat. Above `0`, bodies crossing τ early snap ahead of it. |
 
 ### Settling
 
@@ -462,13 +470,17 @@ and intended aesthetic — there is no universal default. Go up until the
 stop-motion feel is visible, then back off until it reads well at your camera
 distance.
 
-### Then adjust hold frames
+### Then set the cadence
 
-`MaxHoldFrames` prevents the rig from appearing frozen during slow sections.
-Raise it if you see long holds on idle animations.
+`StepRate` sets the beat. Start at `12` (on twos). Lower it for a chunkier,
+slower-reading look; raise it toward `24` for something closer to smooth.
 
-`MinHoldFrames` prevents jitter on fast motion. Raise it if you see rapid
-flickering between two nearby poses.
+Leave `CadenceJitter` at `0` unless you specifically want limbs falling off the
+beat. Raise it only for a deliberate loose or glitchy effect — it is the setting
+most likely to read as an accidental stutter.
+
+Note that when jitter is `0`, τ no longer affects *timing* at all (the forced
+snap fires first), though it still selects which pose is held.
 
 ### Physics stepping
 
@@ -537,7 +549,8 @@ Right-click the `OnTwosAuthoring` component header in Play Mode:
 ### Profile inspector
 
 Opening any `OnTwosProfile` asset shows foldouts per settings block, with
-inline validation warnings (e.g. `MaxHoldFrames < MinHoldFrames`).
+inline validation warnings (e.g. a ragdoll `StepRate` too high for the physics
+tick rate to deliver).
 
 ### Bake window
 

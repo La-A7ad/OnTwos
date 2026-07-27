@@ -35,7 +35,7 @@ namespace OnTwos.Editor
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Tau"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("PositionTau"));
                 EditorGUILayout.HelpBox(
-                    "MinHoldFrames and MaxHoldFrames are profile-only — edit them on the assigned OnTwosProfile under the Ragdoll foldout.",
+                    "Step Rate and Cadence Jitter are profile-only — edit them on the assigned OnTwosProfile under the Ragdoll foldout.",
                     MessageType.None);
                 EditorGUI.indentLevel--;
             }
