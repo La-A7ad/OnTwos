@@ -51,6 +51,7 @@ namespace OnTwos.Editor
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("AutoBindOnAwake"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("AutoCreateProxy"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("AddDiagnostics"));
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("AddSquashStretch"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("ManageRigidbodyKinematics"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("ZeroVelocityOnRelease"));
                 if (!kinematicsManaged)

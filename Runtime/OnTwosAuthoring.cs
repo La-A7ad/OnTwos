@@ -47,6 +47,12 @@ namespace OnTwos.Runtime
                  "Disable in shipping builds to suppress diagnostic output.")]
         public bool AddDiagnostics = false;
 
+        [Tooltip("If true, a SquashStretch component is added alongside the AnimationStepper " +
+                 "on Awake. Stretches bones along their own motion using the stepper's " +
+                 "held-vs-raw divergence — no shader, no extra draw call. Tune Gain on the " +
+                 "component itself once it exists.")]
+        public bool AddSquashStretch = false;
+
         [Tooltip("If true, every Rigidbody under the physics root is held kinematic while " +
                  "the rig is animator-driven, and released to dynamic by ActivateRagdoll(). " +
                  "Required for stability: the Ragdoll Wizard creates bodies non-kinematic, " +
@@ -157,6 +163,12 @@ namespace OnTwos.Runtime
             _animStepper.AnimatorRoot = AnimatorRoot;
             _animStepper.BoneRoot     = BoneRoot;
             _animStepper.enabled = true;
+
+            // Added after the stepper exists so SquashStretch resolves it immediately
+            // rather than falling back to its late-attach path.
+            if (AddSquashStretch && GetComponent<SquashStretch>() == null)
+                gameObject.AddComponent<SquashStretch>();
+
             return _animStepper;
         }
 

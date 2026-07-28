@@ -99,6 +99,11 @@ namespace OnTwos.Runtime
                  "this small — 0.05 is a good starting point.")]
         public float MaxVisualOffset = 0.05f;
 
+        [Tooltip("Compute the per-bone held-vs-raw divergence signal each frame and publish " +
+                 "it via BoneDivergence. Costs a few operations per bone, so it is off unless " +
+                 "something consumes it. SquashStretch enables this automatically in Awake.")]
+        public bool EnableBoneDivergence = false;
+
         [Header("Smear (whole-mesh MVP)")]
         [Tooltip("Bone used to derive the whole-mesh smear vector pushed to the " +
                  "_SmearDirection/_SmearStrength shader properties. Assign a bone that " +
@@ -147,6 +152,53 @@ namespace OnTwos.Runtime
         private Vector3 _heldWorldPos;
         private float   _lastPositionSnapTime;
         private bool    _visualOffsetReady;
+
+        // Per-bone divergence signal, published for smear consumers. Allocated only when
+        // EnableBoneDivergence is set, so the default path pays nothing.
+        private Vector3[] _boneTipOffsets;
+        private Vector3[] _boneDivergence;
+
+        // -----------------------------------------------------------------
+        // Published signal
+        // -----------------------------------------------------------------
+
+        /// <summary>
+        /// The bones this stepper drives, in the order it discovered them.
+        /// Treat as read-only; it is the live internal array, not a copy.
+        /// </summary>
+        public Transform[] Bones => _bones;
+
+        /// <summary>
+        /// True for bones excluded from stepping. Index-parallel to <see cref="Bones"/>.
+        /// </summary>
+        public bool[] BoneExcluded => _excluded;
+
+        /// <summary>
+        /// World-space displacement between where each bone actually is (raw) and where
+        /// it is being drawn (held), measured at the bone's tip. Index-parallel to
+        /// <see cref="Bones"/>; zero for excluded bones and while
+        /// <see cref="EnableBoneDivergence"/> is false.
+        ///
+        /// Measured at the tip rather than the pivot because a pure rotation produces
+        /// zero displacement *at* the joint — the divergence only becomes visible away
+        /// from it, and that offset is what gives the signal a magnitude at all.
+        ///
+        /// This is the same residual that drives stepping, so smear derived from it is
+        /// guaranteed to be in phase with the holds rather than an independent effect.
+        /// Treat as read-only.
+        /// </summary>
+        public Vector3[] BoneDivergence => _boneDivergence;
+
+        /// <summary>
+        /// Per-bone "tip" offset in that bone's own local space — the direction and distance
+        /// from the joint to what it visibly drives, averaged over all children. Normalised,
+        /// this is the bone's length axis, which is the one direction along which scaling a
+        /// bone reads as a limb elongating rather than thickening.
+        ///
+        /// Index-parallel to <see cref="Bones"/>; null until the divergence signal is
+        /// enabled. Treat as read-only.
+        /// </summary>
+        public Vector3[] BoneTipOffsets => _boneTipOffsets;
 
         // Null in AnySource mode or when no Animator is found in AnimatorDriven mode.
         private AnimatorStateWatcher _stateWatcher;
@@ -249,6 +301,9 @@ namespace OnTwos.Runtime
                 }
             }
 
+            if (EnableBoneDivergence)
+                BuildBoneTipOffsets();
+
             _startTime = Time.time;
             _lastPositionSnapTime = 0f;
             _ready     = true;
@@ -316,6 +371,14 @@ namespace OnTwos.Runtime
 
                 Quaternion held = _schedulers[i].Update(t, raw);
                 _rawRotations[i] = raw;
+
+                // Computed before the write-back, while localRotation still holds last
+                // frame's value — ComputeBoneDivergence resolves both tips through the
+                // parent from explicit rotations, so it must not depend on what this
+                // bone's transform currently contains.
+                if (_boneDivergence != null)
+                    _boneDivergence[i] = ComputeBoneDivergence(i, bone, raw, held);
+
                 if (i == _smearBoneIndex)
                     smearHeldRotation = held;
                 if (!culled)
@@ -351,6 +414,22 @@ namespace OnTwos.Runtime
         // -----------------------------------------------------------------
 
         /// <summary>
+        /// Turn on the per-bone divergence signal, building its buffers immediately if
+        /// this stepper has already started.
+        ///
+        /// Setting <see cref="EnableBoneDivergence"/> directly only works before Start(),
+        /// because that is where the tip offsets are built. Consumers that attach later —
+        /// added at runtime, or ordered after this component — would otherwise set the
+        /// flag and silently read a null array forever. Safe to call repeatedly.
+        /// </summary>
+        public void EnableDivergenceSignal()
+        {
+            EnableBoneDivergence = true;
+            if (_ready && _boneTipOffsets == null)
+                BuildBoneTipOffsets();
+        }
+
+        /// <summary>
         /// Reset every scheduler to the bone's current rotation.
         /// Called automatically on Animator state transitions in AnimatorDriven mode.
         /// Call manually in AnySource mode if your source system has discrete states
@@ -365,6 +444,12 @@ namespace OnTwos.Runtime
                 _schedulers[i].Reset(_bones[i].localRotation);
             }
 
+            // Divergence is meaningless across a flush — the held pose was just replaced,
+            // so any residual describes a comparison that no longer exists. Leaving it
+            // would hold a stale stretch on the rig through the state transition.
+            if (_boneDivergence != null)
+                System.Array.Clear(_boneDivergence, 0, _boneDivergence.Length);
+
             // Re-phase the position hold with the schedulers. Leaving it running would
             // put position and rotation on opposite halves of the beat after a state
             // transition, which reads as the rig creeping between steps.
@@ -375,6 +460,78 @@ namespace OnTwos.Runtime
         public void Deactivate()
         {
             enabled = false;
+        }
+
+        // -----------------------------------------------------------------
+        // Bone divergence signal
+        // -----------------------------------------------------------------
+
+        /// <summary>
+        /// Cache a "tip" offset per bone, in that bone's local space: the direction and
+        /// distance from the joint to the thing it visibly drives.
+        ///
+        /// For branching joints (hips, shoulders, chest) this is the AVERAGE of all
+        /// children, not the first one. Taking GetChild(0) gives a branch joint a
+        /// direction pointing down whichever limb happens to be first in the hierarchy,
+        /// which is arbitrary and produces a divergence vector unrelated to how the joint
+        /// actually moves.
+        ///
+        /// Leaf bones have no children to measure, so they inherit a length from their
+        /// parent's offset — a fingertip or toe still needs a non-zero lever arm or its
+        /// divergence reads as zero no matter how fast it swings.
+        /// </summary>
+        private void BuildBoneTipOffsets()
+        {
+            _boneTipOffsets = new Vector3[_bones.Length];
+            _boneDivergence = new Vector3[_bones.Length];
+
+            for (int i = 0; i < _bones.Length; i++)
+            {
+                Transform bone = _bones[i];
+                if (bone == null) continue;
+
+                int childCount = bone.childCount;
+                if (childCount > 0)
+                {
+                    Vector3 sum = Vector3.zero;
+                    for (int c = 0; c < childCount; c++)
+                        sum += bone.GetChild(c).localPosition;
+                    _boneTipOffsets[i] = sum / childCount;
+                }
+            }
+
+            // Second pass for leaves: borrow the parent's tip length along the parent's
+            // direction. Done after the first pass so parents are already resolved.
+            for (int i = 0; i < _bones.Length; i++)
+            {
+                Transform bone = _bones[i];
+                if (bone == null || _boneTipOffsets[i] != Vector3.zero) continue;
+
+                float length = 0f;
+                for (int p = 0; p < _bones.Length; p++)
+                {
+                    if (_bones[p] == bone.parent) { length = _boneTipOffsets[p].magnitude; break; }
+                }
+                if (length <= 1e-6f) length = 0.1f;   // isolated bone — nominal lever arm
+                _boneTipOffsets[i] = Vector3.up * length;
+            }
+        }
+
+        // Displacement of the bone's tip between where it really is and where it's drawn.
+        // localRotation composes onto the PARENT's frame, so both tips are resolved
+        // through the parent — using the bone's own frame would measure through a
+        // rotation that already includes the one being compared.
+        private Vector3 ComputeBoneDivergence(int i, Transform bone, Quaternion raw, Quaternion held)
+        {
+            Vector3 tip = _boneTipOffsets[i];
+            Transform parent = bone.parent;
+
+            if (parent == null)
+                return (raw * tip) - (held * tip);
+
+            Vector3 local = bone.localPosition;
+            return parent.TransformPoint(local + raw  * tip)
+                 - parent.TransformPoint(local + held * tip);
         }
 
         // -----------------------------------------------------------------
