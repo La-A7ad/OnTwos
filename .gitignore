@@ -1,0 +1,21 @@
+# This package is consumed inside a Unity project, so Unity's local caches can
+# appear here. None of them belong in git — see the main project's SETUP.md.
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+*.csproj
+*.sln
+*.slnx
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Keep every .meta file. Unity references assets by the GUID stored inside them;
+# losing one silently breaks every reference to that asset in every project that
+# consumes this package.
+!*.meta
