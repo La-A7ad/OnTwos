@@ -154,9 +154,17 @@ namespace OnTwos.Editor
                         "ExcludeBones below is always applied.",
                         MessageType.Warning);
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("ExcludeBones"), true);
+
+                EditorGUILayout.Space(4);
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("BoneTunings"), true);
                 EditorGUILayout.HelpBox(
-                    "Exclusion is resolved once in Start(). Changes made during Play mode " +
-                    "take effect only after re-entering Play mode.",
+                    "BoneTunings wins over the profile's BoneOverrides and over ExcludeKeywords. " +
+                    "Drag bones in directly — no naming convention required, so it works on any rig.\n\n" +
+                    "It lives here rather than on the profile because a profile is a shared asset " +
+                    "and cannot hold scene references.",
+                    MessageType.None);
+                EditorGUILayout.HelpBox(
+                    "All bone rules are re-resolved during Play mode as soon as you edit them.",
                     MessageType.None);
                 EditorGUI.indentLevel--;
             }

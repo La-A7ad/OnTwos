@@ -6,7 +6,7 @@ Where something is unverified it says so — the previous handoff (`Context.md`)
 claimed several things were wired that turned out not to be, and that cost real
 debugging time.
 
-Last updated: 2026-07-28.
+Last updated: 2026-08-03.
 
 ---
 
@@ -152,20 +152,46 @@ Confirmed by test:
   it. The GPU-batched-deformation hypothesis is dead.
 - No console errors at any point.
 
-**Not yet tested — run these first when resuming:**
+**Not yet tested — run these first when resuming. The assets are now prepared, so
+each one is an assign-and-look, not an edit.**
 
-1. **Disconnect `Add → VertexDescription.Position`**, leaving every other node in place.
-   Makes it a pure surface shader with no vertex stage. If the mesh renders correctly,
-   *any* connected vertex position block breaks skinning on this setup, and vertex
-   displacement is dead as an approach regardless of the maths inside it.
-2. **Assign a stock `Universal Render Pipeline/Lit` material.** If it renders correctly,
-   the fault is definitely in the shader rather than the rig or mesh import.
-3. **Apply the original, unmodified graph** (currently the active file) and check whether
-   blobs appear. `Context.md` records "can't notice the difference" from long before any
-   of this editing, which is consistent with the smear never having rendered correctly on
-   this project — but that has never been verified.
+Run them in this order and stop at the first one that renders correctly.
+
+1. **Assign `Runtime/CharacterSmear_NoVertexStage.shadergraph`.**
+   This is the active graph with exactly one edge removed — `Add →
+   VertexDescription.Position`. Every node, property and other edge is byte-identical;
+   the Position block itself is still present, just unconnected. Nothing else about
+   the graph changed, so a difference in output isolates the vertex stage and nothing
+   else.
+   - **Renders correctly** → *any* connected vertex position block breaks skinning on
+     this setup. Vertex displacement is dead as an approach here regardless of the
+     maths inside it, and the answer is bone scale (already working) or ghosting.
+   - **Still blobs** → the vertex stage is exonerated. The fault is upstream — the
+     material, the rig, or the mesh import. Go to 2.
+
+2. **Assign a stock `Universal Render Pipeline/Lit` material.**
+   - **Renders correctly** → the fault is in the graph, not the rig or the import.
+   - **Still blobs** → the fault is the rig or the FBX import, and the shader was never
+     the problem. Check `optimizeGameObjects`, the humanoid avatar, and the bone
+     bindposes before touching the graph again.
+
+3. **Confirm the pipeline is live at all** — set
+   `AnimationStepper.DebugForceSmearStrength` to `5` in the Inspector. That bypasses
+   the computed value and pushes a constant `_SmearDirection`/`_SmearStrength`, so the
+   mesh should visibly displace. This separates *"nothing is connected"* from *"the
+   value is too small to see"* — the two look identical on screen, and `Context.md`'s
+   "can't notice the difference" was never resolved into which one it was. Set back to
+   `-1` when done.
 
 Until (1) is answered, nothing about the shader path should be assumed.
+
+**Note on the active graph, confirmed by reading the file:** it contains
+`Position → Multiply(_SmearDirection × _SmearStrength) → Add → VertexDescription.Position`
+and **no `Transform` node**. The world/object space mismatch described above is
+therefore live in the current file — `Context.md`'s claim that the fix had been applied
+was wrong. This does not explain the blobs (a wrong-space offset would slide the mesh,
+not collapse it toward the joints), but it does mean the space fix still has to be
+reapplied once the blocker is resolved.
 
 ---
 
@@ -230,9 +256,11 @@ every walking enemy. Still viable as a **selective accent**: gated on high diver
 capped to a small global pool, for finishers and heavy attacks where doubling one
 character's cost is affordable.
 
-Ghosts need a snap event, which the stepper does **not** currently expose.
-`HoldFrameScheduler` knows whether it snapped and discards the fact; surfacing it is a
-bool and a few lines.
+Ghosts need a snap event. `HoldFrameScheduler.DidSnap` now provides it — it reports
+whether the last `Update` emitted a new held pose, by either the forced-cadence or the
+Tau-crossing path. Note that this is not inferable from outside by comparing successive
+held poses: a barely-moving bone still snaps on the cadence, and an angle-epsilon
+comparison reads that as no snap. `RagdollStepper` used to make exactly that mistake.
 
 ---
 
@@ -242,6 +270,7 @@ bool and a few lines.
 |---|---|
 | `Runtime/SquashStretch.cs` | working; bone-scale technique |
 | `Runtime/AnimationStepper.cs` | publishes the divergence signal |
-| `Runtime/CharacterSmear.shadergraph` | **original**, restored; whole-mesh translate only |
+| `Runtime/CharacterSmear.shadergraph` | **original**, restored; whole-mesh translate only, no Transform node |
+| `Runtime/CharacterSmear_NoVertexStage.shadergraph` | diagnostic 1 — identical but with the vertex Position edge cut |
 | `Archive~/CharacterSmear_NormalMasked.shadergraph.archived` | edited version with the space fix and mask; blocked |
 | `TECHNICAL.md` §6 | the smear concept in the wider architecture |

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using OnTwos.Runtime.Math;
-using OnTwos.Runtime.Recording;
 using OnTwos.Runtime.Utilities;
 
 namespace OnTwos.Runtime
@@ -10,12 +9,7 @@ namespace OnTwos.Runtime
     /// <summary>
     /// Crunchy ragdoll driver — uses the full PCHIP pipeline per bone.
     ///
-    /// Previously: TrajectoryRecorder captured raw snapshots, ShouldSnap() did a
-    /// naive Quaternion.Angle + Vector3.Distance check against a fixed min/max
-    /// hold-frame window. Arc-length, extrema detection, and PCHIP were never
-    /// involved in the ragdoll path at all.
-    ///
-    /// Now: one HoldFrameScheduler per tracked bone, same pipeline as
+    /// One HoldFrameScheduler per tracked bone, same pipeline as
     /// AnimationStepper — PCHIP fit over a rolling window, extrema via Brent's
     /// method, arc-length candidate placement, deviation threshold. The only
     /// difference from the animation path is that samples come from Rigidbody
@@ -34,7 +28,11 @@ namespace OnTwos.Runtime
         // ------------------------------------------------------------------ public fields
 
         public OnTwosProfile Profile;
-        public Transform PhysicsRoot;
+
+        [Tooltip("Bones tuned individually by direct reference. Takes precedence over the " +
+                 "profile's BoneOverrides and over ExcludeKeywords. Reference the bodies on " +
+                 "the source ragdoll, not the visual proxy — the proxy is built at runtime.")]
+        public BoneTuning[] BoneTunings = Array.Empty<BoneTuning>();
 
         [Header("Crunch feel")]
         public float Tau         = 12f;    // degrees of rotation before the proxy snaps
@@ -110,9 +108,20 @@ namespace OnTwos.Runtime
 
         private Renderer[] _sourceRenderers;
         private Animator   _sourceAnimator;
-        private bool[]     _excluded;
+        // Exclusion is NOT mirrored into a local array. It used to be, and prune rebuilt
+        // every parallel array except that one, so after a limb was destroyed the flags
+        // applied to the wrong bones. BoneRuleSet owns the resolved flags and re-resolves
+        // whenever the body set changes, which makes that desync unrepresentable.
         private Quaternion[] _rawRotations;
-        private TrajectoryRecorder _trajectoryRecorder;
+
+        // Source-body transforms, index-parallel to _sourceBodies. Held as their own
+        // array because BoneRuleSet resolves against Transforms and rebuilding this
+        // list every frame would defeat the point of caching the resolution.
+        private Transform[] _bodyTransforms;
+
+        // Resolves exclusion / per-bone tau / per-bone response curve, re-running only
+        // when the rules actually change. See BoneRuleSet.
+        private readonly BoneRuleSet _rules = new BoneRuleSet();
 
         // Cached set of every Renderer on the visual proxy. Used by visibility culling
         // to early-exit ApplyHeldPoses when none of them are on-screen. Populated once
@@ -171,15 +180,13 @@ namespace OnTwos.Runtime
             int bufferSize = ResolveBufferSize();
             float maxHold = ResolveMaxHoldSeconds();
             float minHold = ResolveMinHoldSeconds(maxHold);
-            var overrides = ResolveBoneOverrides();
-            string[] excludeKeywords = ResolveExcludeKeywords();
-
             _schedulers = new HoldFrameScheduler[n];
             _heldPositions = new Vector3[n];
             _heldRotations = new Quaternion[n];
-            _excluded = new bool[n];
             _rawRotations = new Quaternion[n];
-            _trajectoryRecorder = new TrajectoryRecorder(ResolveSnapshotBufferSize(), n);
+
+            RebuildBodyTransforms();
+            SyncBoneRules();
 
             for (int i = 0; i < n; i++)
             {
@@ -190,12 +197,10 @@ namespace OnTwos.Runtime
                 _heldRotations[i] = rb.rotation;
                 _rawRotations[i] = rb.rotation;
 
-                bool excluded = BoneFilter.IsExcluded(rb.transform, null, excludeKeywords, overrides);
-                _excluded[i] = excluded;
-                if (excluded)
+                if (_rules.Excluded[i])
                     continue;
 
-                float boneTau = ResolveTauForBody(rb.transform, tau, overrides);
+                float boneTau = _rules.TauOverride[i] > 0f ? _rules.TauOverride[i] : tau;
                 _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
                 _schedulers[i].CandidatesPerSegment = candidates;
                 _schedulers[i].MinHoldSeconds = minHold;
@@ -220,13 +225,13 @@ namespace OnTwos.Runtime
             float t = Time.fixedTime;
             float liveTau = ResolveTau();
             float posTau  = ResolvePositionTau();
-            var overrides = ResolveBoneOverrides();
             int liveCandidates = ResolveCandidates();
             float liveMaxHold = ResolveMaxHoldSeconds();
             float liveMinHold = ResolveMinHoldSeconds(liveMaxHold);
 
-            if (_trajectoryRecorder != null)
-                _trajectoryRecorder.Capture(_sourceBodies, t);
+            // No-op unless the profile or tuning list was edited, so live tuning in Play
+            // mode keeps working without paying for re-resolution every tick.
+            SyncBoneRules();
 
             if (!_initialized)
             {
@@ -284,7 +289,7 @@ namespace OnTwos.Runtime
                 Quaternion currentRot = rb.rotation;
                 Vector3 currentPos = rb.position;
 
-                if (_excluded != null && i < _excluded.Length && _excluded[i])
+                if (_rules.Excluded != null && i < _rules.Excluded.Length && _rules.Excluded[i])
                 {
                     _heldRotations[i] = currentRot;
                     _heldPositions[i] = currentPos;
@@ -294,8 +299,9 @@ namespace OnTwos.Runtime
 
                 if (_schedulers[i] == null) continue;
 
-                float response = ResolveResponseMultiplier(ComputeMotionIntensity(i, currentRot));
-                float boneTau = ResolveTauForBody(rb.transform, liveTau, overrides) * response;
+                float response = ResolveResponseMultiplier(ComputeMotionIntensity(i, currentRot), _rules.ResponseCurve[i]);
+                float baseTau  = _rules.TauOverride[i] > 0f ? _rules.TauOverride[i] : liveTau;
+                float boneTau  = baseTau * response;
                 int boneCandidates = Mathf.Clamp(Mathf.RoundToInt(liveCandidates * response), 1, 4);
 
                 _schedulers[i].Tau = boneTau;
@@ -303,15 +309,15 @@ namespace OnTwos.Runtime
                 _schedulers[i].MinHoldSeconds = liveMinHold;
                 _schedulers[i].MaxHoldSeconds = liveMaxHold;
 
-                Quaternion prevHeld = _heldRotations[i];
-                Quaternion newHeld  = _schedulers[i].Update(t, currentRot);
-                _heldRotations[i]   = newHeld;
-                _rawRotations[i] = currentRot;
+                _heldRotations[i] = _schedulers[i].Update(t, currentRot);
+                _rawRotations[i]  = currentRot;
 
-                // When the rotation scheduler snaps, also snap the position —
-                // they should move together. The angle check uses a tiny epsilon
-                // rather than exact equality to guard against float drift.
-                bool rotSnapped = Quaternion.Angle(prevHeld, newHeld) > 0.01f;
+                // When the rotation scheduler snaps, also snap the position — they
+                // should move together. Read from the scheduler rather than comparing
+                // poses with an angle epsilon: a body that is barely rotating still
+                // snaps on the cadence, and the epsilon read that as "no snap" and left
+                // the position held until PositionTau happened to trip on its own.
+                bool rotSnapped = _schedulers[i].DidSnap;
 
                 if (rotSnapped || Vector3.Distance(_heldPositions[i], currentPos) >= posTau)
                     _heldPositions[i] = currentPos;
@@ -447,6 +453,10 @@ private bool AnchorWoke()
             var newSched   = new List<HoldFrameScheduler>(_schedulers.Length);
             var newHeldPos = new List<Vector3>(_heldPositions.Length);
             var newHeldRot = new List<Quaternion>(_heldRotations.Length);
+            // _rawRotations is index-parallel to the arrays above and must be compacted
+            // in the same pass. Omitting it left ComputeMotionIntensity differencing
+            // against another bone's rotation after any limb was destroyed.
+            var newRawRot = new List<Quaternion>(_rawRotations != null ? _rawRotations.Length : 0);
 
             for (int i = 0; i < _sourceBodies.Length; i++)
             {
@@ -464,6 +474,9 @@ private bool AnchorWoke()
                     newSched.Add(_schedulers[i]);
                     newHeldPos.Add(_heldPositions[i]);
                     newHeldRot.Add(_heldRotations[i]);
+                    newRawRot.Add(_rawRotations != null && i < _rawRotations.Length
+                        ? _rawRotations[i]
+                        : _sourceBodies[i].rotation);
                 }
             }
 
@@ -473,6 +486,7 @@ private bool AnchorWoke()
             _schedulers    = newSched.ToArray();
             _heldPositions = newHeldPos.ToArray();
             _heldRotations = newHeldRot.ToArray();
+            _rawRotations  = newRawRot.ToArray();
 
             Debug.Log(
                 $"[RagdollStepper] {gameObject.name} pruned {removed} bone(s), " +
@@ -481,9 +495,12 @@ private bool AnchorWoke()
             if (_sourceBodies.Length == 0) return;
 
             _anchorIndex = PickAnchorIndex(_sourceBodies);
-            _trajectoryRecorder = _sourceBodies.Length > 0
-                ? new TrajectoryRecorder(ResolveSnapshotBufferSize(), _sourceBodies.Length)
-                : null;
+
+            // The rule set resolves against _bodyTransforms, so it has to be rebuilt and
+            // re-synced here too — otherwise the resolved arrays stay at the pre-prune
+            // length and every index past the removed bone reads the wrong bone's rules.
+            RebuildBodyTransforms();
+            SyncBoneRules();
 
             // Reinitialize so the next FixedUpdate seeds the schedulers cleanly
             // rather than continuing from stale window state.
@@ -551,9 +568,6 @@ private int ResolveCandidates()
 private int ResolveBufferSize()
     => Profile != null ? Mathf.Max(4, Profile.LiveAnimation.BufferSize) : 30;
 
-private int ResolveSnapshotBufferSize()
-    => Profile != null ? Mathf.Max(2, Profile.Proxy.SnapshotBufferSize) : 120;
-
 // Cadence bounds, in seconds. Profile-only by design — RagdollStepperEditor directs
 // the user to the profile's Ragdoll foldout for these. Without them the schedulers
 // keep HoldFrameScheduler's 0 / +Infinity defaults and the cadence never engages.
@@ -588,18 +602,34 @@ private string[] ResolveExcludeKeywords()
 private OnTwosProfile.BoneOverride[] ResolveBoneOverrides()
     => Profile != null ? Profile.BoneOverrides : Array.Empty<OnTwosProfile.BoneOverride>();
 
-private float ResolveTauForBody(Transform bone, float baseTau, OnTwosProfile.BoneOverride[] overrides)
+// Index-parallel Transform view of _sourceBodies, for BoneRuleSet to resolve against.
+// Rebuilt on init and after a prune — the two points where the body set changes.
+private void RebuildBodyTransforms()
 {
-    float overrideTau = BoneFilter.GetTauOverride(bone, overrides);
-    return overrideTau > 0f ? overrideTau : baseTau;
+    int n = _sourceBodies?.Length ?? 0;
+    if (_bodyTransforms == null || _bodyTransforms.Length != n)
+        _bodyTransforms = new Transform[n];
+
+    for (int i = 0; i < n; i++)
+        _bodyTransforms[i] = _sourceBodies[i] != null ? _sourceBodies[i].transform : null;
 }
 
-private float ResolveResponseMultiplier(float motionIntensity)
-{
-    if (Profile == null || Profile.Global == null || Profile.Global.ResponseCurve == null)
-        return 1f;
+private bool SyncBoneRules()
+    => _rules.Sync(_bodyTransforms, null, ResolveExcludeKeywords(),
+                   ResolveBoneOverrides(), BoneTunings);
 
-    float multiplier = Profile.Global.ResponseCurve.Evaluate(Mathf.Clamp01(motionIntensity));
+/// <summary>
+/// Motion intensity → Tau multiplier. A per-bone curve wins over the profile's
+/// global one; passing null selects the global curve.
+/// </summary>
+private float ResolveResponseMultiplier(float motionIntensity, AnimationCurve boneCurve)
+{
+    AnimationCurve curve = boneCurve
+        ?? (Profile != null && Profile.Global != null ? Profile.Global.ResponseCurve : null);
+
+    if (curve == null || curve.length == 0) return 1f;
+
+    float multiplier = curve.Evaluate(Mathf.Clamp01(motionIntensity));
     return Mathf.Max(0.05f, multiplier);
 }
 

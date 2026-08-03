@@ -1,5 +1,19 @@
 # OnTwos — Context Handoff
 
+> **Historical document, superseded in places.** Kept for the design reasoning and
+> the research/novelty discussion, which still stand. For current status read
+> `ToDo.md` (roadmap), `TECHNICAL.md` §11 (known gaps) and `SMEAR.md` (the smear
+> work) instead — those are maintained; this is not.
+>
+> Specifically stale as of 2026-08-03: the bug list below is largely fixed. The
+> `OnTwosProfileEditor` IMGUI desync (#5), the hot-path GC allocation (#3) and the
+> `PruneDestroyedBodies` desync are all resolved. #7's `_observedMaxSpeed` decay
+> concern is moot — that self-calibrating version was never committed, and the
+> shipped code divides by `Mathf.Max(1f, MaxDegreesPerSecond)`, so there is no
+> underflow to guard against. The `BoneTuning[]` list described as "designed, not
+> implemented" is now built, though it lives on the stepper components rather than
+> the profile — a ScriptableObject cannot hold a scene reference.
+
 Repo: `github.com/La-A7ad/OnTwos` (main branch). Unity 6000.3.17f1. Likely URP (assumed from Shader Graph use, not explicitly confirmed).
 
 ## What This Project Is

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace OnTwos.Runtime.Math
@@ -27,9 +26,19 @@ namespace OnTwos.Runtime.Math
 
         private const int MinSamples = 4;
 
-        // Cached PCHIP fits — rebuilt only when _dirty is true.
-        private Pchip _px, _py, _pz, _pw;
+        // Cached PCHIP fits — refitted in place, only when _dirty is true. Allocated
+        // once in the constructor; RebuildIfDirty calls Fit() rather than constructing,
+        // because every Add() dirties the cache and so this ran every frame per bone.
+        private readonly Pchip _px, _py, _pz, _pw;
         private bool _dirty = true;
+        private bool _fitValid;
+
+        // Scratch buffers for RebuildIfDirty — the unrolled ring buffer, the
+        // deduplicated sample set, and the four per-component channels handed to Pchip.
+        // All sized to capacity and reused; the fit's own KnotCount says how much is live.
+        private readonly float[] _scratchTimes;
+        private readonly Quaternion[] _scratchRots;
+        private readonly float[] _qx, _qy, _qz, _qw;
 
         // Arc-length LUT: parallel arrays, _lutTimes[i] ↔ _lutCumAngles[i].
         // _lutCumAngles is cumulative Quaternion.Angle from tMin, monotone increasing.
@@ -58,6 +67,19 @@ namespace OnTwos.Runtime.Math
             _lutTimes     = new float[LutSize];
             _lutCumAngles = new float[LutSize];
             _lutValid     = false;
+
+            _scratchTimes = new float[capacity];
+            _scratchRots  = new Quaternion[capacity];
+            _qx = new float[capacity];
+            _qy = new float[capacity];
+            _qz = new float[capacity];
+            _qw = new float[capacity];
+
+            _px = new Pchip(capacity);
+            _py = new Pchip(capacity);
+            _pz = new Pchip(capacity);
+            _pw = new Pchip(capacity);
+            _fitValid = false;
         }
 
         /// <summary>
@@ -86,11 +108,9 @@ namespace OnTwos.Runtime.Math
             _head  = 0;
             _dirty = true;
 
-            // Invalidate cached fits and LUT so stale data can't be evaluated.
-            _px = null;
-            _py = null;
-            _pz = null;
-            _pw = null;
+            // Invalidate cached fits and LUT so stale data can't be evaluated. The Pchip
+            // objects survive — they are storage, and the flags are what gate reads.
+            _fitValid = false;
             _lutValid = false;
         }
 
@@ -104,7 +124,7 @@ namespace OnTwos.Runtime.Math
             if (Count < MinSamples) return LatestRaw();
 
             RebuildIfDirty();
-            return _px == null
+            return !_fitValid
                 ? LatestRaw()
                 : new Quaternion(
                     _px.Evaluate(t),
@@ -122,7 +142,7 @@ namespace OnTwos.Runtime.Math
             if (Count < MinSamples) return Vector4.zero;
 
             RebuildIfDirty();
-            return _px == null
+            return !_fitValid
                 ? Vector4.zero
                 : new Vector4(
                     _px.Derivative(t),
@@ -138,11 +158,17 @@ namespace OnTwos.Runtime.Math
         /// Uses the prebuilt arc-length LUT — no curve evaluation at query time.
         /// Two lerps per candidate: time→angle (to find angA/angB), angle→time
         /// (to find each target). Total cost: O(n · log(LutSize)).
+        ///
+        /// Results are written into <paramref name="dest"/> and the number written is
+        /// returned. The caller owns the buffer so this can run once per monotone
+        /// segment per bone per frame without allocating.
         /// </summary>
-        public float[] ArcLengthCandidates(float a, float b, int n)
+        public int ArcLengthCandidates(float a, float b, int n, float[] dest)
         {
-            if (!_lutValid || n <= 0)
-                return Array.Empty<float>();
+            if (dest == null) throw new ArgumentNullException(nameof(dest));
+            if (!_lutValid || n <= 0) return 0;
+            if (n > dest.Length)
+                throw new ArgumentException($"dest holds {dest.Length}, needs {n}", nameof(dest));
 
             float angA = LutLerp(_lutTimes, _lutCumAngles, a);
             float angB = LutLerp(_lutTimes, _lutCumAngles, b);
@@ -151,20 +177,18 @@ namespace OnTwos.Runtime.Math
             if (totalAngle < 1e-5f)
             {
                 // Near-flat segment — fall back to equal time (GL midpoint equivalent).
-                float[] flat = new float[n];
                 for (int i = 0; i < n; i++)
-                    flat[i] = a + (b - a) * (i + 1f) / (n + 1f);
-                return flat;
+                    dest[i] = a + (b - a) * (i + 1f) / (n + 1f);
+                return n;
             }
 
-            float[] result = new float[n];
             for (int i = 0; i < n; i++)
             {
                 float targetAng = angA + totalAngle * (i + 1f) / (n + 1f);
                 // Invert: angle → time. _lutCumAngles is monotone so swap roles.
-                result[i] = LutLerp(_lutCumAngles, _lutTimes, targetAng);
+                dest[i] = LutLerp(_lutCumAngles, _lutTimes, targetAng);
             }
-            return result;
+            return n;
         }
 
         // Rebuild PCHIP fits from current buffer contents, then build arc-length LUT.
@@ -174,37 +198,41 @@ namespace OnTwos.Runtime.Math
         {
             if (!_dirty) return;
 
+            // Unroll the ring buffer into the scratch arrays, dropping non-increasing
+            // timestamps as we go. Deduplication is fused into the copy rather than
+            // done as a separate pass so there is no intermediate array at all.
             int n = Count;
-            float[] xs = new float[n];
-            Quaternion[] qs = new Quaternion[n];
             int start = Count < _capacity ? 0 : _head;
+            int m = 0;
 
             for (int i = 0; i < n; i++)
             {
                 int idx = (start + i) % _capacity;
-                xs[i] = _times[idx];
-                qs[i] = _rots[idx];
+                float t = _times[idx];
+                if (m > 0 && t <= _scratchTimes[m - 1]) continue;
+
+                _scratchTimes[m] = t;
+                _scratchRots[m]  = _rots[idx];
+                m++;
             }
 
-            (xs, qs) = Deduplicate(xs, qs);
-            if (xs.Length < 2) { _px = null; _lutValid = false; _dirty = false; return; }
+            if (m < 2) { _fitValid = false; _lutValid = false; _dirty = false; return; }
 
-            QuaternionSignNorm.Normalise(qs);
-
-            int m = xs.Length;
-            float[] qx = new float[m]; float[] qy = new float[m];
-            float[] qz = new float[m]; float[] qw = new float[m];
+            QuaternionSignNorm.Normalise(_scratchRots, m);
 
             for (int i = 0; i < m; i++)
             {
-                qx[i] = qs[i].x; qy[i] = qs[i].y;
-                qz[i] = qs[i].z; qw[i] = qs[i].w;
+                Quaternion q = _scratchRots[i];
+                _qx[i] = q.x; _qy[i] = q.y;
+                _qz[i] = q.z; _qw[i] = q.w;
             }
 
-            _px = new Pchip(xs, qx);
-            _py = new Pchip(xs, qy);
-            _pz = new Pchip(xs, qz);
-            _pw = new Pchip(xs, qw);
+            _px.Fit(_scratchTimes, _qx, m);
+            _py.Fit(_scratchTimes, _qy, m);
+            _pz.Fit(_scratchTimes, _qz, m);
+            _pw.Fit(_scratchTimes, _qw, m);
+
+            _fitValid = true;
 
             BuildArcLengthLut();
 
@@ -280,21 +308,5 @@ namespace OnTwos.Runtime.Math
             }
         }
 
-        private static (float[], Quaternion[]) Deduplicate(float[] xs, Quaternion[] qs)
-        {
-            List<float> outX = new List<float>(xs.Length);
-            List<Quaternion> outQ = new List<Quaternion>(qs.Length);
-
-            for (int i = 0; i < xs.Length; i++)
-            {
-                if (outX.Count > 0 && xs[i] <= outX[outX.Count - 1])
-                    continue;
-
-                outX.Add(xs[i]);
-                outQ.Add(qs[i]);
-            }
-
-            return (outX.ToArray(), outQ.ToArray());
-        }
     }
 }

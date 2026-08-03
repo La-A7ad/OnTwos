@@ -101,10 +101,11 @@ Runtime/
   Pchip.cs                 scalar monotone cubic interpolant
   ExtremaDetector.cs       derivative zero-crossing finder (Brent's method)
   QuaternionSignNorm.cs    hemisphere consistency for quaternion sequences
-  DeviationThreshold.cs    standalone threshold walker
   RagdollProxyBuilder.cs   builds the physics-decoupled visual clone
   BonePathCache.cs         O(1) hierarchy-to-hierarchy bone mapping
-  BoneFilter.cs            exclusion + per-bone tau override resolution
+  BoneFilter.cs            name-based exclusion + tau override (bake-time path)
+  BoneRuleSet.cs           resolves all bone rules once, index-parallel to bones
+  BoneTuning.cs            per-bone tuning by direct Transform reference
   OnTwosProfile.cs         ScriptableObject tuning asset
   OnTwosAuthoring.cs       wiring component + animated↔physics handoff
 ```
@@ -592,24 +593,39 @@ Asymptotically this is cheap — everything is linear in a small constant window
 and there is no global optimisation anywhere. The LUT is the main reason: it
 converts what would be repeated numerical integration into two array lookups.
 
-**The real cost is allocation, not arithmetic.** The hot path allocates
-aggressively on the managed heap:
+**The real cost used to be allocation, not arithmetic**, and the hot path is now
+allocation-free in steady state. What it allocated, and what replaced it:
 
-- `MonotoneCubicSampler.RebuildIfDirty()` — sample arrays, deduplication lists and
-  their `ToArray()` copies, four component arrays, and four `Pchip` objects each
-  allocating two more arrays. Roughly 20+ allocations, and it runs every frame
-  because every `Add()` marks the cache dirty.
-- `HoldFrameScheduler.Update()` — two `List<float>` per frame, plus a fresh
-  `float[]` from `ArcLengthCandidates` per segment.
-- `ExtremaDetector.FindForBone()` — four closures and several lists, every 10th frame.
-- `BoneFilter` — `bone.name` and `ToLowerInvariant()` allocate strings per bone
-  per frame whenever overrides are configured.
+- `MonotoneCubicSampler.RebuildIfDirty()` allocated sample arrays, deduplication
+  lists and their `ToArray()` copies, four component arrays, and four `Pchip`
+  objects each allocating two more — roughly 20+ allocations, every frame, because
+  every `Add()` marks the cache dirty. Now: every buffer is allocated once in the
+  constructor and reused, deduplication is fused into the ring-buffer unroll so no
+  intermediate array exists at all, and the four `Pchip` objects are refitted in
+  place via `Pchip.Fit()` rather than reconstructed.
+- `HoldFrameScheduler.Update()` allocated two `List<float>` per frame plus a fresh
+  `float[]` per segment from `ArcLengthCandidates`. Now: both lists are fields that
+  are `Clear()`ed (which keeps the backing array), and `ArcLengthCandidates` writes
+  into a caller-owned buffer and returns a count.
+- `ExtremaDetector.FindForBone()` allocated four closures and several lists every
+  10th frame, and called `Derivative` — which evaluates all four quaternion
+  components regardless — once per component, discarding three quarters of each
+  result. Now: one fused scan over all four components, no closures (the component
+  is an index, not a `Func`), and a `[ThreadStatic]` scratch list.
+- Bone rules resolved `bone.name` and `ToLowerInvariant()` per bone per frame.
+  Now: `BoneRuleSet` resolves exclusion, per-bone tau and per-bone response curve
+  into index-parallel arrays and re-resolves only when the rules actually change,
+  detected by reference comparison. Live editing in Play mode still works.
 
-For a 60-bone rig at 60 fps that is on the order of **10⁵ allocations per second**,
-which is GC pressure, not CPU time. Anyone profiling this should fix the
-allocations — pooled and reused buffers throughout — **before** reaching for the
-Job System or Burst. Parallelising an allocation-bound workload does not help, and
-Burst cannot compile code that allocates managed memory at all.
+Measured on a 60-bone rig at locked cadence, 600 frames after warm-up:
+**93 KB/frame → 0 B/frame** (5.3 MB/s → 0 at 60 fps). Locked-cadence output is
+bit-identical to the previous implementation; the adaptive modes differ by at most
+0.04° on a handful of frames, because extrema are now merged globally across
+components rather than filtered per-component first.
+
+This mattered before any Job System or Burst work, not after: parallelising an
+allocation-bound workload does not help, and Burst cannot compile code that
+allocates managed memory at all. That path is now unblocked.
 
 Both steppers support optional visibility culling: when every renderer on the rig
 is offscreen, the pose *writes* are skipped while the schedulers keep running, so
@@ -765,12 +781,9 @@ Stated plainly, because a technical document that omits them isn't useful.
 
 **Performance**
 
-- Heavy per-frame managed allocation throughout the hot path (§7). This is the
-  single highest-value fix available and should precede any Job System or Burst
-  work.
 - No Burst or Job System support. A plan exists (NativeArray restructuring,
-  gather→job→scatter for transform access) but no code — and it is blocked behind
-  the allocation work regardless.
+  gather→job→scatter for transform access) but no code. The allocation work that
+  used to block it is done (§7), so it is now unblocked rather than premature.
 
 **Unbuilt features**
 
@@ -789,21 +802,25 @@ Stated plainly, because a technical document that omits them isn't useful.
   joint receive different displacements. Blending the top two bone weights would
   address it.
 
-**Dead or inert code**
+**Resolved since this document was first written**
 
-- `TrajectoryRecorder` captures a full snapshot of every rigidbody every
-  `FixedUpdate`, but `LatestFrame` is never read — the entire recording subsystem
-  is pure overhead.
-- `DeviationThreshold.Walk()` has no callers; `HoldFrameScheduler` inlines its own
-  threshold walk.
-- `RagdollStepper.PhysicsRoot` is never read — the proxy builder always uses the
-  component's own GameObject.
-
-**Bugs**
-
-- `RagdollStepper.PruneDestroyedBodies()` rebuilds the body, bone, scheduler and
-  held-pose arrays when a limb is destroyed, but not `_excluded` or
-  `_rawRotations`. After a prune those two are index-misaligned against the rest,
-  so exclusion flags apply to the wrong bones and motion intensity reads garbage.
-- The bake window applies keyword exclusion but not `BoneOverrides`, so a baked
-  clip can differ from the runtime look on any rig using per-bone overrides.
+- `TrajectoryRecorder` (with `RigidbodySnapshot`, `RigidbodySnapshotFrame` and the
+  `SnapshotBufferSize` profile knob) captured every rigidbody every `FixedUpdate`
+  and was never read. Removed.
+- `DeviationThreshold.Walk()` had no callers — `HoldFrameScheduler` inlines its own
+  threshold walk. Removed.
+- `RagdollStepper.PhysicsRoot` was assigned but never read. Removed; the proxy
+  builder clones the whole GameObject deliberately, so that renderers outside the
+  physics hierarchy survive into the proxy.
+- `RagdollStepper.PruneDestroyedBodies()` rebuilt the body, bone, scheduler and
+  held-pose arrays when a limb was destroyed, but not `_excluded` or
+  `_rawRotations`, leaving both index-misaligned against the rest. Exclusion is now
+  owned by `BoneRuleSet` and re-resolved on prune, so that half cannot desync at
+  all; `_rawRotations` is compacted in the same pass as everything else.
+- The bake window applied keyword exclusion but not `BoneOverrides`. Fixed — it now
+  passes the override list through.
+- `OnTwosProfileEditor` evaluated two `HelpBox` conditions inline, so dragging a
+  slider across a comparison boundary could emit a different number of controls in
+  Unity's Repaint pass than Layout measured, desyncing the `GUILayout` stack and
+  truncating everything below it. Both conditions are now evaluated once at the top
+  of `OnInspectorGUI`.

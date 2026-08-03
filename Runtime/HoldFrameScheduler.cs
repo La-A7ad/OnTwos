@@ -67,15 +67,40 @@ namespace OnTwos.Runtime.Math
 
         private int _nCandidates; // per monotone segment
 
+        /// <summary>
+        /// True when the most recent <see cref="Update"/> call emitted a new held pose,
+        /// by either the forced-cadence or the Tau-crossing path. Valid until the next
+        /// Update; a <see cref="Reset"/> clears it.
+        ///
+        /// Callers previously had to infer this by comparing the returned pose against
+        /// the previous one with an angle epsilon, which cannot distinguish a real snap
+        /// to a near-identical pose (an idle bone forced by MaxHoldSeconds) from no snap
+        /// at all. The scheduler already knows; this just stops it throwing the fact away.
+        /// Consumers: position coupling in RagdollStepper, and any smear technique that
+        /// needs the snap instant rather than the residual.
+        /// </summary>
+        public bool DidSnap { get; private set; }
+
         // Timestamp of the last snap, in the caller's timebase. Stored as an absolute
         // time rather than an accumulated delta so repeated addition can't drift over
         // a long session. Negative means "no snap yet" (seeded on the first Update).
         private float _lastSnapTime;
 
         // Extrema cache — recomputed every ExtremaInterval frames only.
-        private List<float> _cachedExtrema = new List<float>();
+        private readonly List<float> _cachedExtrema = new List<float>(32);
         private int _framesSinceExtremaScan = 0;
         private const int ExtremaInterval = 10;
+
+        // Per-Update working sets. Allocated once and Clear()ed each frame — List.Clear
+        // keeps the backing array, so after the first few frames these stop growing
+        // entirely. Previously both were `new`d every Update, on every bone, every frame,
+        // which was the single largest steady-state allocation in the pipeline.
+        private readonly List<float> _boundaries = new List<float>(32);
+        private readonly List<float> _candidates = new List<float>(64);
+
+        // Scratch for one segment's arc-length candidates. CandidatesPerSegment is
+        // clamped to 4, so this is always large enough.
+        private readonly float[] _segCandidates = new float[4];
 
         /// <param name="tau">Degrees of rotation before a hold is emitted.</param>
         /// <param name="candidatesPerSegment">Arc-length candidates per monotone segment (1-4).</param>
@@ -99,6 +124,11 @@ namespace OnTwos.Runtime.Math
         /// </summary>
         public Quaternion Update(float time, Quaternion boneRotation)
         {
+            // Cleared up front so every early return below reports "no snap". The seed
+            // frame and the pre-Ready warm-up both assign _held directly, but neither is
+            // a step — the pose is tracking continuously, which is the opposite of a hold.
+            DidSnap = false;
+
             _sampler.Add(time, boneRotation);
 
             // First sample after construction or Reset — seed the window and held pose.
@@ -129,7 +159,7 @@ namespace OnTwos.Runtime.Math
             // Recompute extrema only every ExtremaInterval frames.
             if (_framesSinceExtremaScan >= ExtremaInterval)
             {
-                _cachedExtrema = ExtremaDetector.FindForBone(_sampler, tStart, tEnd);
+                ExtremaDetector.FindForBone(_sampler, tStart, tEnd, _cachedExtrema);
                 _framesSinceExtremaScan = 0;
             }
             _framesSinceExtremaScan++;
@@ -139,24 +169,30 @@ namespace OnTwos.Runtime.Math
             // before building the boundaries list. Without this filter, extrema that
             // predate the current window start produce unsorted, out-of-range segment
             // boundaries that corrupt candidate placement.
-            List<float> boundaries = new List<float>(_cachedExtrema.Count + 2) { tStart };
-            foreach (float e in _cachedExtrema)
+            _boundaries.Clear();
+            _boundaries.Add(tStart);
+            for (int i = 0; i < _cachedExtrema.Count; i++)
+            {
+                float e = _cachedExtrema[i];
                 if (e > tStart && e < tEnd)
-                    boundaries.Add(e);
-            if (boundaries[boundaries.Count - 1] < tEnd)
-                boundaries.Add(tEnd);
+                    _boundaries.Add(e);
+            }
+            if (_boundaries[_boundaries.Count - 1] < tEnd)
+                _boundaries.Add(tEnd);
 
             // Generate arc-length candidates within each monotone segment.
-            List<float> candidates = new List<float>(boundaries.Count * _nCandidates);
-            for (int seg = 0; seg < boundaries.Count - 1; seg++)
+            _candidates.Clear();
+            for (int seg = 0; seg < _boundaries.Count - 1; seg++)
             {
-                float a = boundaries[seg];
-                float b = boundaries[seg + 1];
+                float a = _boundaries[seg];
+                float b = _boundaries[seg + 1];
                 if (b - a < 1e-5f) continue;
-                float[] segCandidates = _sampler.ArcLengthCandidates(a, b, _nCandidates);
-                candidates.AddRange(segCandidates);
+
+                int written = _sampler.ArcLengthCandidates(a, b, _nCandidates, _segCandidates);
+                for (int i = 0; i < written; i++)
+                    _candidates.Add(_segCandidates[i]);
             }
-            candidates.Sort();
+            _candidates.Sort();
 
             // Cadence gate, in seconds of the caller's timebase.
             float heldFor   = time - _lastSnapTime;
@@ -171,6 +207,7 @@ namespace OnTwos.Runtime.Math
             {
                 // Force snap to the latest evaluated pose and restart the hold clock.
                 _held = _sampler.Evaluate(tEnd);
+                DidSnap = true;
 
                 // Advance by whole step intervals rather than assigning `time`, so the
                 // beat stays locked to a fixed grid instead of drifting forward by the
@@ -188,13 +225,15 @@ namespace OnTwos.Runtime.Math
             {
                 // Walk candidates through deviation threshold, chaining snaps across
                 // the full window so the held pose reflects the latest step position.
-                foreach (float t in candidates)
+                for (int i = 0; i < _candidates.Count; i++)
                 {
+                    float t = _candidates[i];
                     if (t > time) break;
                     Quaternion evaluated = _sampler.Evaluate(t);
                     if (Quaternion.Angle(_held, evaluated) > Tau)
                     {
                         _held = evaluated;
+                        DidSnap = true;
                         // Tau-driven snap: stamp the candidate's own time, not `time`.
                         // The snap conceptually happened at t, and using it keeps the
                         // next MinHoldSeconds window measured from the real event.
@@ -229,6 +268,7 @@ namespace OnTwos.Runtime.Math
             // whole rig onto one beat.
             _framesSinceExtremaScan  = ExtremaInterval; // force rescan next Update
             _cachedExtrema.Clear();
+            DidSnap = false;
         }
     }
 }

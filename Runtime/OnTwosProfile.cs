@@ -145,10 +145,6 @@ namespace OnTwos.Runtime
         [Serializable]
         public class ProxySettings
         {
-            [Tooltip("Circular snapshot buffer size for the trajectory recorder. " +
-                     "120 covers two seconds at 60 Hz fixedDeltaTime.")]
-            public int SnapshotBufferSize = 120;
-
             [Tooltip("Hide the original Renderers on the source rig so only the proxy is visible. " +
                      "Disable to debug both layers simultaneously.")]
             public bool HideSourceRenderers = true;

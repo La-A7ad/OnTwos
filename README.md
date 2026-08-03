@@ -93,9 +93,9 @@ For each tracked bone, every frame:
 1. Sample the source value (rotation / position / animator pose / any source).
 2. Append to a `MonotoneCubicSampler` rolling buffer; fit a Fritsch-Carlson PCHIP
    spline over the recent window.
-3. Walk the spline forward using `DeviationThreshold` — emit a new "snap" when
-   accumulated deviation (rotation degrees or position meters) exceeds τ, with
-   candidate placements weighted by arc length.
+3. Walk the spline forward — emit a new "snap" when accumulated deviation
+   (rotation degrees or position meters) exceeds τ, with candidate placements
+   weighted by arc length.
 4. `HoldFrameScheduler` gates the snap on elapsed **time**, from a `StepRate` in
    poses per second (`12` = the classic "on twos"), so the cadence is identical
    at any framerate. `CadenceJitter` sets how far bones may drift off that shared

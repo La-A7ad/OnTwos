@@ -20,7 +20,7 @@ frames so on-screen motion looks stop-motion.
 
 1. Drag any humanoid character with an `Animator` into the scene.
 2. Add `OnTwosAuthoring` to the root GameObject.
-3. **Create a profile:** `Assets → Create → OnTwos → Profile`. Save it as
+3. **Create a profile:** `Assets → Create → CrunchyRagdoll → Profile`. Save it as
    `DemoProfile.asset`.
 4. On the `OnTwosAuthoring` inspector:
    - Drag `DemoProfile` into the `Profile` field.

@@ -21,11 +21,28 @@ namespace OnTwos.Runtime.Math
     /// </summary>
     public sealed class Pchip
     {
-        // Knot times (strictly increasing) and values.
-        private readonly float[] _x;
-        private readonly float[] _y;
-        // Tangent (slope) at each knot, after Fritsch-Carlson monotonicity fix.
-        private readonly float[] _m;
+        // Knot times (strictly increasing), values, and Fritsch-Carlson tangents.
+        // Sized to the capacity handed to the constructor and reused across every
+        // Fit() call — the live steppers refit four of these per bone per frame, so
+        // allocating here would dominate the whole pipeline's GC cost.
+        private float[] _x;
+        private float[] _y;
+        private float[] _m;
+        // Secant slopes, scratch for ComputeTangents. Length _x.Length - 1 is enough.
+        private float[] _d;
+        // Number of knots currently fitted, which may be less than the array length.
+        private int _n;
+
+        /// <summary>
+        /// Allocate an unfitted curve with room for <paramref name="capacity"/> knots.
+        /// Call <see cref="Fit"/> before evaluating.
+        /// </summary>
+        public Pchip(int capacity)
+        {
+            if (capacity < 2) throw new ArgumentException("capacity must be >= 2");
+            Allocate(capacity);
+            _n = 0;
+        }
 
         /// <summary>Construct from paired time/value samples.</summary>
         public Pchip(float[] x, float[] y)
@@ -34,21 +51,52 @@ namespace OnTwos.Runtime.Math
             if (y == null) throw new ArgumentNullException(nameof(y));
             if (x.Length != y.Length)
                 throw new ArgumentException($"x ({x.Length}) and y ({y.Length}) length mismatch");
-            if (x.Length < 2)
-                throw new ArgumentException("PCHIP requires at least 2 samples");
 
-            for (int i = 1; i < x.Length; i++)
+            Allocate(x.Length);
+            Fit(x, y, x.Length);
+        }
+
+        /// <summary>
+        /// Refit this curve to the first <paramref name="count"/> entries of the given
+        /// arrays, reusing the existing storage. The inputs are copied, so the caller is
+        /// free to reuse its own scratch buffers immediately afterwards.
+        /// </summary>
+        public void Fit(float[] x, float[] y, int count)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            if (y == null) throw new ArgumentNullException(nameof(y));
+            if (count < 2)
+                throw new ArgumentException("PCHIP requires at least 2 samples");
+            if (count > x.Length || count > y.Length)
+                throw new ArgumentException($"count ({count}) exceeds the supplied arrays");
+
+            for (int i = 1; i < count; i++)
                 if (x[i] <= x[i - 1])
                     throw new ArgumentException($"x must be strictly increasing; violation at index {i} (x[{i - 1}]={x[i - 1]}, x[{i}]={x[i]})");
 
-            _x = x;
-            _y = y;
-            _m = ComputeTangents(x, y);
+            if (_x == null || _x.Length < count) Allocate(count);
+
+            Array.Copy(x, _x, count);
+            Array.Copy(y, _y, count);
+            _n = count;
+
+            ComputeTangents();
         }
 
-        public int KnotCount => _x.Length;
+        private void Allocate(int capacity)
+        {
+            _x = new float[capacity];
+            _y = new float[capacity];
+            _m = new float[capacity];
+            _d = new float[capacity - 1];
+        }
+
+        /// <summary>False until <see cref="Fit"/> has run with at least two knots.</summary>
+        public bool IsFitted => _n >= 2;
+
+        public int KnotCount => _n;
         public float TMin => _x[0];
-        public float TMax => _x[_x.Length - 1];
+        public float TMax => _x[_n - 1];
 
         /// <summary>
         /// Evaluate curve at time t. Outside [TMin, TMax] the endpoint value is returned
@@ -56,7 +104,7 @@ namespace OnTwos.Runtime.Math
         /// </summary>
         public float Evaluate(float t)
         {
-            int n = _x.Length;
+            int n = _n;
             if (t <= _x[0]) return _y[0];
             if (t >= _x[n - 1]) return _y[n - 1];
 
@@ -84,7 +132,7 @@ namespace OnTwos.Runtime.Math
         /// </summary>
         public float Derivative(float t)
         {
-            int n = _x.Length;
+            int n = _n;
             if (t <= _x[0] || t >= _x[n - 1]) return 0f; // flat extrapolation
 
             int i = FindSegment(t);
@@ -108,7 +156,7 @@ namespace OnTwos.Runtime.Math
         private int FindSegment(float t)
         {
             int lo = 0;
-            int hi = _x.Length - 1;
+            int hi = _n - 1;
             while (hi - lo > 1)
             {
                 int mid = (lo + hi) >> 1;
@@ -125,16 +173,14 @@ namespace OnTwos.Runtime.Math
         /// (2) Clamp to satisfy the Fritsch-Carlson sufficient condition for
         ///     monotonicity within each segment.
         /// </summary>
-        private static float[] ComputeTangents(float[] x, float[] y)
+        private void ComputeTangents()
         {
-            int n = x.Length;
+            int n = _n;
+            float[] x = _x, y = _y, d = _d, m = _m;
 
             // Secant slopes d[i] = (y[i+1] - y[i]) / (x[i+1] - x[i]).
-            float[] d = new float[n - 1];
             for (int i = 0; i < n - 1; i++)
                 d[i] = (y[i + 1] - y[i]) / (x[i + 1] - x[i]);
-
-            float[] m = new float[n];
 
             // --- Stage 1: initial tangents ---
 
@@ -142,7 +188,7 @@ namespace OnTwos.Runtime.Math
             {
                 // Degenerate: a single segment is just a linear secant.
                 m[0] = m[1] = d[0];
-                return m;
+                return;
             }
 
             // Interior knots: weighted harmonic mean of adjacent secants.
@@ -193,8 +239,6 @@ namespace OnTwos.Runtime.Math
                     m[i + 1] = tau * b * d[i];
                 }
             }
-
-            return m;
         }
 
         /// <summary>

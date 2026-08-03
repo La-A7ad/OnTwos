@@ -111,6 +111,18 @@ namespace OnTwos.Runtime
                  "usually stationary. Leave null to disable smear.")]
         public Transform SmearReferenceBone;
 
+        [Tooltip("Diagnostic. When >= 0, overrides the computed _SmearStrength with this " +
+                 "fixed value and pushes a constant _SmearDirection, so the shader is driven " +
+                 "hard and unambiguously.\n\n" +
+                 "Use this to separate 'the smear pipeline is not connected' from 'the smear " +
+                 "value is too small to see' — the two look identical on screen and confusing " +
+                 "them has cost real debugging time on this project. Try 5. Leave at -1 off.")]
+        public float DebugForceSmearStrength = -1f;
+
+        [Tooltip("Direction used with DebugForceSmearStrength. Object-space up by default, " +
+                 "which displaces visibly on any rig regardless of which way it faces.")]
+        public Vector3 DebugForceSmearDirection = Vector3.up;
+
         [Header("Fallback settings (used when Profile is null)")]
         [Range(0.5f, 45f)] public float Tau = 5f;
         [Range(1, 4)] public int CandidatesPerSegment = 2;
@@ -133,6 +145,14 @@ namespace OnTwos.Runtime
         public Transform[] ExcludeBones    = Array.Empty<Transform>();
         public string[]    ExcludeKeywords = Array.Empty<string>();
 
+        [Header("Per-bone tuning")]
+        [Tooltip("Bones tuned individually by direct reference. Takes precedence over the " +
+                 "profile's BoneOverrides and over ExcludeKeywords.\n\n" +
+                 "Unlike keyword matching this is rig-agnostic — drag the bone in and it " +
+                 "works whatever the rig's naming convention. Lives here rather than on the " +
+                 "profile because a profile asset cannot hold scene references.")]
+        public BoneTuning[] BoneTunings = Array.Empty<BoneTuning>();
+
         // -----------------------------------------------------------------
         // Private state
         // -----------------------------------------------------------------
@@ -141,6 +161,11 @@ namespace OnTwos.Runtime
         private HoldFrameScheduler[] _schedulers;
         private Quaternion[]         _rawRotations;
         private bool[]               _excluded;
+
+        // Resolves exclusion / per-bone tau / per-bone response curve once and re-resolves
+        // only when the rules actually change, instead of re-deriving them from bone names
+        // every frame. See BoneRuleSet for why that mattered.
+        private readonly BoneRuleSet _rules = new BoneRuleSet();
         private float                _startTime;
         private bool                 _ready;
         private MaterialPropertyBlock _propertyBlock;
@@ -244,25 +269,24 @@ namespace OnTwos.Runtime
             // Cache renderers once for optional per-frame visibility checks.
             _renderers = GetComponentsInChildren<Renderer>(true);
 
-            float       tau            = ResolveTau();
-            int         candidates     = ResolveCandidates();
-            int         bufferSize     = ResolveBufferSize();
-            float       maxHold        = ResolveMaxHoldSeconds();
-            float       minHold        = ResolveMinHoldSeconds(maxHold);
-            Transform[] excludeBones   = ResolveExcludeBones();
-            string[]    excludeKeywords = ResolveExcludeKeywords();
-            OnTwosProfile.BoneOverride[] overrides = ResolveBoneOverrides();
+            float tau        = ResolveTau();
+            int   candidates = ResolveCandidates();
+            int   bufferSize = ResolveBufferSize();
+            float maxHold    = ResolveMaxHoldSeconds();
+            float minHold    = ResolveMinHoldSeconds(maxHold);
+
+            SyncBoneRules();
 
             for (int i = 0; i < _bones.Length; i++)
             {
-                _excluded[i] = BoneFilter.IsExcluded(_bones[i], excludeBones, excludeKeywords, overrides);
+                _excluded[i] = _rules.Excluded[i];
                 if (_excluded[i])
                 {
                     _schedulers[i] = null;
                     continue;
                 }
 
-                float boneTau = ResolveTauForBone(_bones[i], tau, overrides);
+                float boneTau = _rules.TauOverride[i] > 0f ? _rules.TauOverride[i] : tau;
                 _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
                 _schedulers[i].CandidatesPerSegment = candidates;
                 _schedulers[i].MinHoldSeconds = minHold;
@@ -327,7 +351,11 @@ namespace OnTwos.Runtime
             int liveCandidates = ResolveCandidates();
             float liveMaxHold = ResolveMaxHoldSeconds();
             float liveMinHold = ResolveMinHoldSeconds(liveMaxHold);
-            var overrides = ResolveBoneOverrides();
+
+            // Cheap no-op unless the profile or the tuning list was actually edited, so
+            // live tuning in Play mode still takes effect immediately.
+            if (SyncBoneRules())
+                RefreshExclusionFlags();
 
             // The null check here handles both AnySource mode (_stateWatcher is never
             // created) and AnimatorDriven mode where no Animator was found at Start.
@@ -358,8 +386,9 @@ namespace OnTwos.Runtime
                 }
 
                 Quaternion raw = bone.localRotation;
-                float response = ResolveResponseMultiplier(ComputeMotionIntensity(i, raw));
-                float boneTau = ResolveTauForBone(bone, liveTau, overrides) * response;
+                float response = ResolveResponseMultiplier(ComputeMotionIntensity(i, raw), _rules.ResponseCurve[i]);
+                float baseTau  = _rules.TauOverride[i] > 0f ? _rules.TauOverride[i] : liveTau;
+                float boneTau  = baseTau * response;
                 int boneCandidates = Mathf.Clamp(Mathf.RoundToInt(liveCandidates * response), 1, 4);
 
                 // Sync tau / candidate density / cadence so live profile slider changes
@@ -401,8 +430,12 @@ namespace OnTwos.Runtime
 
                 _rootSmearVector = rawDir - heldDir;
 
-                _propertyBlock.SetVector("_SmearDirection", _rootSmearVector.normalized);
-                _propertyBlock.SetFloat("_SmearStrength", _rootSmearVector.magnitude);
+                bool forced = DebugForceSmearStrength >= 0f;
+                _propertyBlock.SetVector("_SmearDirection",
+                    forced ? DebugForceSmearDirection.normalized : _rootSmearVector.normalized);
+                _propertyBlock.SetFloat("_SmearStrength",
+                    forced ? DebugForceSmearStrength : _rootSmearVector.magnitude);
+
                 foreach (var renderer in _renderers)
                     if (renderer is SkinnedMeshRenderer)
                         renderer.SetPropertyBlock(_propertyBlock);
@@ -646,18 +679,59 @@ namespace OnTwos.Runtime
         private OnTwosProfile.BoneOverride[] ResolveBoneOverrides()
             => Profile != null ? Profile.BoneOverrides : Array.Empty<OnTwosProfile.BoneOverride>();
 
-        private float ResolveTauForBone(Transform bone, float baseTau, OnTwosProfile.BoneOverride[] overrides)
+        /// <summary>
+        /// Re-resolve the bone rules if anything changed. Returns true on a real change.
+        /// </summary>
+        private bool SyncBoneRules()
+            => _rules.Sync(_bones, ResolveExcludeBones(), ResolveExcludeKeywords(),
+                           ResolveBoneOverrides(), BoneTunings);
+
+        /// <summary>
+        /// Copy freshly-resolved exclusion flags across, creating a scheduler for any bone
+        /// that just became included and dropping the one for any bone that just became
+        /// excluded. Without the create step a bone un-excluded mid-play would hit a null
+        /// scheduler on the very next line.
+        /// </summary>
+        private void RefreshExclusionFlags()
         {
-            float overrideTau = BoneFilter.GetTauOverride(bone, overrides);
-            return overrideTau > 0f ? overrideTau : baseTau;
+            float tau        = ResolveTau();
+            int   candidates = ResolveCandidates();
+            int   bufferSize = ResolveBufferSize();
+
+            for (int i = 0; i < _bones.Length; i++)
+            {
+                bool nowExcluded = _rules.Excluded[i];
+                if (nowExcluded == _excluded[i]) continue;
+
+                _excluded[i] = nowExcluded;
+                if (nowExcluded)
+                {
+                    _schedulers[i] = null;
+                    continue;
+                }
+
+                float boneTau = _rules.TauOverride[i] > 0f ? _rules.TauOverride[i] : tau;
+                _schedulers[i] = new HoldFrameScheduler(boneTau, candidates, bufferSize);
+                if (_bones[i] != null)
+                {
+                    _schedulers[i].Reset(_bones[i].localRotation);
+                    _rawRotations[i] = _bones[i].localRotation;
+                }
+            }
         }
 
-        private float ResolveResponseMultiplier(float motionIntensity)
+        /// <summary>
+        /// Motion intensity → Tau multiplier. A per-bone curve wins over the profile's
+        /// global one; passing null selects the global curve.
+        /// </summary>
+        private float ResolveResponseMultiplier(float motionIntensity, AnimationCurve boneCurve)
         {
-            if (Profile == null || Profile.Global == null || Profile.Global.ResponseCurve == null)
-                return 1f;
+            AnimationCurve curve = boneCurve
+                ?? (Profile != null && Profile.Global != null ? Profile.Global.ResponseCurve : null);
 
-            float multiplier = Profile.Global.ResponseCurve.Evaluate(Mathf.Clamp01(motionIntensity));
+            if (curve == null || curve.length == 0) return 1f;
+
+            float multiplier = curve.Evaluate(Mathf.Clamp01(motionIntensity));
             return Mathf.Max(0.05f, multiplier);
         }
 

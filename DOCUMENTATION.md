@@ -199,7 +199,6 @@ object — the term refers to the stepping technique, not a specific rig type.
 
 | Field | Default | Description |
 |---|---|---|
-| `SnapshotBufferSize` | `120` | Trajectory snapshot buffer (~2 s at 60 Hz). |
 | `HideSourceRenderers` | `true` | Hide the source object's renderers so only the proxy is visible. |
 | `StripProxyComponents` | `true` | Remove physics, scripts, and Animators from the proxy clone. |
 | `ForceEnableProxyRenderers` | `true` | Re-enable all Renderers on the proxy after build. |
@@ -447,8 +446,8 @@ ExcludeKeywords: [ "ik_target", "weapon_socket", "attach", "camera_bone" ]
 
 ### BoneOverrides
 
-Per-bone rules that take precedence over `ExcludeKeywords`. Use for per-bone
-τ tuning or to force-exclude specific bones by name.
+Per-bone rules on the **profile**, matched by name substring. Take precedence over
+`ExcludeKeywords`. Use for per-bone τ tuning or to force-exclude bones by name.
 
 ```
 BoneOverrides:
@@ -457,6 +456,51 @@ BoneOverrides:
   - NameContains: "prop_hand"
     ForceExclude: true    # always follows the Animator
 ```
+
+### BoneTunings
+
+Per-bone rules on the **stepper component**, addressed by a direct `Transform`
+reference. Highest precedence of all the bone rules.
+
+This exists because name matching cannot be rig-agnostic — every rig names its
+bones differently, and a keyword tuned for one skeleton silently does nothing on
+the next. Drag the bone in and it works regardless of naming convention.
+
+It lives on `AnimationStepper` / `RagdollStepper` rather than on `OnTwosProfile`
+because a profile is a shared asset, and Unity cannot serialise a reference to a
+scene object on a ScriptableObject — the reference would be nulled on save.
+
+| Field | Description |
+|---|---|
+| `Bone` | The bone this entry applies to. |
+| `Exclude` | Exclude from stepping entirely — the bone keeps its unstepped source motion. |
+| `TauOverride` | Per-bone crunchiness threshold in degrees. `<= 0` inherits the profile's τ. |
+| `ResponseCurveOverride` | Per-bone motion-intensity → τ-multiplier remap. Empty inherits `Global.ResponseCurve`. |
+
+Typical use — stop the stepper fighting foot IK, which corrects every frame and
+would have its correction discarded on held frames:
+
+```
+BoneTunings:
+  - Bone: mixamorig:LeftFoot   Exclude: true
+  - Bone: mixamorig:RightFoot  Exclude: true
+  - Bone: mixamorig:Head       TauOverride: 3
+```
+
+On `RagdollStepper`, reference the bodies on the **source** ragdoll, not the
+visual proxy — the proxy is a runtime clone and does not exist at author time.
+
+### Precedence
+
+Most specific first. The first rule that matches a bone settles it; later rules
+are not consulted.
+
+1. `BoneTunings` — direct `Transform` reference, per rig
+2. `BoneOverrides` — name substring, per profile
+3. `ExcludeBones` — explicit `Transform` references on the stepper
+4. `ExcludeKeywords` — name substring, per profile
+
+All of these are re-resolved during Play mode as soon as you edit them.
 
 ---
 

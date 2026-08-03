@@ -8,7 +8,7 @@ namespace OnTwos.Editor
     public sealed class RagdollStepperEditor : UnityEditor.Editor
     {
         private bool _foldCrunch = true;
-        private bool _foldBuffer = false;
+        private bool _foldFilters = false;
         private bool _foldSettle = false;
         private bool _foldProxy = false;
         private bool _foldDebug = false;
@@ -19,7 +19,6 @@ namespace OnTwos.Editor
             var stepper = (RagdollStepper)target;
 
             EditorGUILayout.PropertyField(serializedObject.FindProperty("Profile"));
-            EditorGUILayout.PropertyField(serializedObject.FindProperty("PhysicsRoot"));
 
             EditorGUILayout.Space(4);
             if (stepper.Profile != null)
@@ -41,12 +40,15 @@ namespace OnTwos.Editor
             }
             EditorGUILayout.EndFoldoutHeaderGroup();
 
-            _foldBuffer = EditorGUILayout.BeginFoldoutHeaderGroup(_foldBuffer, "Snapshot Buffer");
-            if (_foldBuffer)
+            _foldFilters = EditorGUILayout.BeginFoldoutHeaderGroup(_foldFilters, "Bone Filters");
+            if (_foldFilters)
             {
                 EditorGUI.indentLevel++;
+                EditorGUILayout.PropertyField(serializedObject.FindProperty("BoneTunings"), true);
                 EditorGUILayout.HelpBox(
-                    "SnapshotBufferSize is profile-only — edit it on the assigned OnTwosProfile under the Proxy foldout.",
+                    "Reference the Rigidbody transforms on the source ragdoll — the visual proxy " +
+                    "is a runtime clone and its transforms do not exist yet at author time.\n\n" +
+                    "Takes precedence over the profile's BoneOverrides and ExcludeKeywords.",
                     MessageType.None);
                 EditorGUI.indentLevel--;
             }

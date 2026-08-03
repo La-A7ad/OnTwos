@@ -204,7 +204,6 @@ namespace OnTwos.Runtime
 
             _ragdollStepper              = GetComponent<RagdollStepper>() ?? gameObject.AddComponent<RagdollStepper>();
             _ragdollStepper.Profile      = Profile;
-            _ragdollStepper.PhysicsRoot  = PhysicsRoot;
 
             if (AddDiagnostics && GetComponent<RagdollLogger>() == null)
                 gameObject.AddComponent<RagdollLogger>();

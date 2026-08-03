@@ -30,7 +30,20 @@ namespace OnTwos.Runtime.Math
         public static void Normalise(Quaternion[] q)
         {
             if (q == null) throw new ArgumentNullException(nameof(q));
-            for (int i = 1; i < q.Length; i++)
+            Normalise(q, q.Length);
+        }
+
+        /// <summary>
+        /// Normalise the first <paramref name="count"/> entries only. Lets callers keep
+        /// one oversized scratch buffer rather than allocating an exactly-sized array
+        /// each time, which matters because this runs per bone per frame.
+        /// </summary>
+        public static void Normalise(Quaternion[] q, int count)
+        {
+            if (q == null) throw new ArgumentNullException(nameof(q));
+            if (count > q.Length) throw new ArgumentOutOfRangeException(nameof(count));
+
+            for (int i = 1; i < count; i++)
             {
                 if (Quaternion.Dot(q[i - 1], q[i]) < 0f)
                     q[i] = new Quaternion(-q[i].x, -q[i].y, -q[i].z, -q[i].w);

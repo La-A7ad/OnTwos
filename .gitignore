@@ -19,3 +19,6 @@ Thumbs.db
 # losing one silently breaks every reference to that asset in every project that
 # consumes this package.
 !*.meta
+
+# graphify code-graph output (regenerate with: graphify update .)
+graphify-out/
