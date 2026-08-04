@@ -16,8 +16,11 @@ as pending long after both shipped, which cost real time to rediscover.
 
 - **Burst / Job System pass over the scheduler pipeline.**
   Plan exists: `NativeArray` restructuring, gather→job→scatter for transform
-  access. No code. The allocation work that used to block this is done (the hot
-  path is now allocation-free in steady state), so this is unblocked.
+  access. No code. Both blockers are gone (the hot path is allocation-free and
+  locked cadence no longer runs the pipeline at all), but so is most of the
+  motivation: in the default locked configuration there is now very little left to
+  jobify. Worth revisiting only if `CadenceJitter > 0` becomes a shipping
+  configuration, where the full spline pipeline does still run per bone per tick.
 
 - **Parallel processing of multiple ragdolls.**
   The ragdoll-specific framing of the item above: distribute
@@ -39,6 +42,33 @@ as pending long after both shipped, which cost real time to rediscover.
   real off-by-one-frame in the reparameterisation.
 
 ## Done
+
+- **Ragdoll settle/wake lifecycle.** Settling now puts every tracked body to
+  `Sleep()` and returns from `FixedUpdate` immediately, so a resting corpse costs
+  nothing in either script time or the PhysX solver — previously `_settled` only
+  short-circuited the visual writes while the joint island stayed in the solver
+  forever. Waking is read from `Rigidbody.IsSleeping()` instead of a velocity
+  threshold on the heaviest body, which fixes a real defect: settling considered
+  every body but waking considered one, so an impact that moved an outstretched limb
+  without shifting the hips left the proxy frozen at its settled pose while the
+  ragdoll visibly moved underneath it. Jointed bodies share one PhysX island, so any
+  contact on any limb now wakes the whole rig. `WakeVelocityThreshold`, `AnchorWoke()`
+  and the anchor-index bookkeeping are gone.
+
+- **Locked-cadence fast path.** `forceSnap` is tested before the Tau branch, so at
+  `CadenceJitter = 0` the candidate walk is unreachable and the spline refit, the
+  80-point arc-length LUT and the extrema scan were computed and discarded every bone
+  every tick. `HoldFrameScheduler` now detects the locked case and skips the pipeline
+  while preserving every timing-relevant branch. **40.4 µs → 1.5 µs per 13-bone rig
+  per tick** (50 ragdolls: 2.02 ms → 0.08 ms of a 20 ms budget), and baking gets the
+  same speedup. Verified bit-identical across 17 step-rate/framerate configurations
+  and 68,000 frames including a mid-run `Reset()`, which is what preserves parity
+  between baked clips and the Play mode preview.
+
+- **Redundant proxy writes removed.** `FixedUpdate` and `LateUpdate` together asked to
+  write the proxy pose 50-110 times a second to express ~12 actual pose changes. A
+  dirty flag now gates both. Bones excluded from stepping still write every tick, as
+  they must — they follow physics unstepped.
 
 - **Hot-path allocation pass.** `Pchip` refits in place, `MonotoneCubicSampler`
   fuses dedup into its ring-buffer unroll and reuses every scratch array,

@@ -154,7 +154,11 @@ namespace OnTwos.Runtime.Utilities
 
         /// <summary>
         /// Pick the highest-mass body as the "anchor" — usually the hips/torso.
-        /// Used as a representative bone for settle and wake checks.
+        ///
+        /// No longer used internally: settle/wake is decided per body rather than from a
+        /// single representative one. Kept as public API because "which body is the torso"
+        /// is the question callers ask when placing decals, effects or attach points on a
+        /// corpse, and the mass heuristic answers it without a naming convention.
         /// </summary>
         public static int PickAnchorIndex(Rigidbody[] bodies)
         {

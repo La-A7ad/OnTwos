@@ -61,7 +61,14 @@ namespace OnTwos.Editor
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("SettleVelocityThreshold"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("SettleAngularThreshold"));
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("SettleTime"));
-                EditorGUILayout.PropertyField(serializedObject.FindProperty("WakeVelocityThreshold"));
+                EditorGUILayout.HelpBox(
+                    "On settle the bodies are put to sleep, so a resting corpse costs nothing " +
+                    "in either script time or the physics solver.\n\n" +
+                    "It wakes on any new contact or applied force — there is no wake threshold. " +
+                    "Jointed bodies share one PhysX island, so a hit on any limb wakes the " +
+                    "whole ragdoll. If your game moves a settled body by writing its transform " +
+                    "directly, call Rigidbody.WakeUp() yourself; that path bypasses PhysX.",
+                    MessageType.None);
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();

@@ -525,10 +525,24 @@ Implementation details that matter:
   case where a body translates significantly without rotating — sliding along a
   flat surface.
 - **Settle detection.** When all bodies stay below linear and angular velocity
-  thresholds for `SettleTime`, the ragdoll is declared settled, the proxy locks,
-  and `OnSettled` fires. A separate, higher wake threshold on the heaviest body
-  ("anchor") resumes simulation if something disturbs it, reseeding the schedulers
-  so the spline doesn't try to fit across the settle gap.
+  thresholds for `SettleTime`, the ragdoll is declared settled, the proxy locks at
+  its final pose, every tracked body is put to `Sleep()`, and `OnSettled` fires.
+  Sleeping rather than merely freezing the visual writes is what makes a resting
+  corpse actually free — PhysX drops the whole joint island out of the solver, so a
+  scene can accumulate bodies without accumulating cost.
+- **Waking.** Read from `Rigidbody.IsSleeping()`, not from a velocity threshold.
+  PhysX wakes a sleeping body on any new contact or applied force, and
+  CharacterJoint-connected bodies form a single island — so an impulse on one hand
+  wakes the whole ragdoll and it steps the impact. Schedulers are reseeded from live
+  physics on wake so the spline doesn't try to fit across the settle gap. The
+  previous design compared the heaviest body's velocity against a wake threshold,
+  which could not express "any force wakes it": settling considered every body but
+  waking considered one, so an impact that moved a limb without shifting the hips
+  left the proxy frozen while the physics moved underneath it.
+
+  The one thing this does not catch is a body moved by a direct `Transform` write,
+  which bypasses PhysX entirely; callers doing that must `WakeUp()` the body
+  themselves.
 
 **The animated↔physics handoff.** The same solver-fighting failure applies before
 activation: while a rig is animator-driven, `AnimationStepper` writes
@@ -630,6 +644,27 @@ allocates managed memory at all. That path is now unblocked.
 Both steppers support optional visibility culling: when every renderer on the rig
 is offscreen, the pose *writes* are skipped while the schedulers keep running, so
 internal state stays coherent and there is no pop when the rig returns to view.
+
+**Locked cadence costs nothing.** §4.6 establishes that `forceSnap` is tested before
+the Tau branch, so at `CadenceJitter = 0` the candidate walk is unreachable. What
+that means in practice is that the spline refit, the arc-length LUT and the extrema
+scan were being computed and discarded every bone every tick. `HoldFrameScheduler`
+now detects the locked case and takes a fast path: the sample is still appended and
+every timing-relevant branch still runs, but the pipeline is skipped and the held
+pose is taken directly from the incoming rotation — which is what evaluating the
+spline at its own newest knot returns anyway. Measured on a 13-bone humanoid at
+50 Hz, **40.4 µs → 1.5 µs per rig per tick**. Output is bit-identical across 17
+step-rate/framerate configurations and 68,000 frames, which is what preserves parity
+with baked clips, since `OnTwosBakeWindow` drives this same scheduler.
+
+**Settled ragdolls leave the simulation.** `RagdollStepper` puts every tracked body
+to sleep once it settles, rather than only freezing the visual writes. A resting
+corpse then costs nothing on either side: `FixedUpdate` returns immediately and PhysX
+drops the whole joint island out of the solver. Waking is read back from
+`Rigidbody.IsSleeping()` rather than a velocity threshold on a representative body —
+CharacterJoint-connected bodies form one PhysX island, so any contact or force on any
+limb wakes the whole ragdoll, with no threshold to tune and no deadzone in which the
+physics moves but the proxy does not.
 
 ---
 
@@ -819,6 +854,11 @@ Stated plainly, because a technical document that omits them isn't useful.
   all; `_rawRotations` is compacted in the same pass as everything else.
 - The bake window applied keyword exclusion but not `BoneOverrides`. Fixed — it now
   passes the override list through.
+- `RagdollStepper` decided wake from the anchor body alone while deciding settle from
+  *every* body. An impact that moved an outstretched limb without pushing the hips
+  past `WakeVelocityThreshold` left the proxy frozen at its settled pose while the
+  ragdoll visibly moved underneath it. Replaced by the PhysX sleep flag;
+  `WakeVelocityThreshold` and the anchor-index bookkeeping are gone.
 - `OnTwosProfileEditor` evaluated two `HelpBox` conditions inline, so dragging a
   slider across a comparison boundary could emit a different number of controls in
   Unity's Repaint pass than Layout measured, desyncing the `GUILayout` stack and

@@ -193,7 +193,6 @@ object — the term refers to the stepping technique, not a specific rig type.
 | `SettleVelocityThreshold` | `0.75` | Linear speed (m/s) below which a body counts as still. |
 | `SettleAngularThreshold` | `25` | Angular speed (deg/s) below which a body counts as still. |
 | `SettleTime` | `0.35` | Seconds all bodies must stay below the thresholds before settling is declared. |
-| `WakeVelocityThreshold` | `3.0` | Linear speed (m/s) on the anchor body that wakes the proxy after settling. |
 
 ### Proxy Rig
 
@@ -332,6 +331,24 @@ stepper.OnWoke += () =>
 
 Subscribe before or just after adding the component — both events fire on the
 main thread from `FixedUpdate`, so Unity API calls from handlers are safe.
+
+**What settling actually does.** `OnSettled` is not just a notification. On
+settle the stepper writes the final pose to the proxy and then calls
+`Rigidbody.Sleep()` on every tracked body. After that the ragdoll costs
+essentially nothing: `FixedUpdate` returns immediately, no transforms are
+written, and PhysX drops the whole joint island out of the solver. The proxy
+stays visible at its resting pose.
+
+**Waking is contact-driven, with no threshold.** Any new contact or applied
+force wakes a sleeping body, and CharacterJoint-connected bodies form a single
+PhysX island — so an impulse on one hand wakes the entire ragdoll and it steps
+the impact. `OnWoke` fires once at that point, and every scheduler is reseeded
+from live physics so the spline window doesn't try to fit across the settle gap.
+
+**One caveat:** a body moved by writing its `Transform` directly will *not*
+wake, because that bypasses PhysX entirely. If your game teleports or
+repositions a settled corpse that way, call `Rigidbody.WakeUp()` on it
+yourself. Forces, impulses and collisions all work without any help.
 
 ### Properties
 
@@ -539,8 +556,13 @@ scale up proportionally.
 
 Increase `SettleTime` if the proxy settles prematurely on bouncy physics.
 Lower `SettleVelocityThreshold` if the proxy never settles (bodies still drift
-at low speed). Raise `WakeVelocityThreshold` if minor collisions keep waking
-an already-settled object.
+at low speed).
+
+There is no wake threshold to tune. Once settled the bodies are put to sleep,
+and PhysX wakes them on any new contact or applied force — so anything that
+touches the corpse brings it back. If settling looks like it cuts motion off
+mid-jiggle, tighten `SettleVelocityThreshold` or lengthen `SettleTime`; the
+sleep is what makes a resting corpse free, so it is deliberately abrupt.
 
 ### ResponseCurve
 
@@ -556,7 +578,7 @@ thread from `FixedUpdate` and Unity API calls from handlers are safe.
 
 ```csharp
 event Action OnSettled; // all bodies still for SettleTime seconds
-event Action OnWoke;    // anchor body exceeded WakeVelocityThreshold after settling
+event Action OnWoke;    // a settled ragdoll was disturbed and is stepping again
 ```
 
 Subscribe via the `RagdollStepper` reference:

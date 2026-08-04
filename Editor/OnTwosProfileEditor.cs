@@ -44,7 +44,6 @@ namespace OnTwos.Editor
             // above it silently disables stepping — every tick forces a snap.
             float physicsRate = 1f / Mathf.Max(Time.fixedDeltaTime, 1e-5f);
             bool ragdollHoldWarning = profile.Ragdoll.StepRate > physicsRate * 0.5f;
-            bool settlingThresholdWarning = profile.Settling.WakeVelocityThreshold <= profile.Settling.SettleVelocityThreshold;
 
             DrawProfileHeader();
 
@@ -86,10 +85,13 @@ namespace OnTwos.Editor
             {
                 EditorGUI.indentLevel++;
                 EditorGUILayout.PropertyField(serializedObject.FindProperty("Settling"), true);
-                if (settlingThresholdWarning)
-                    EditorGUILayout.HelpBox(
-                        "Wake threshold <= Settle threshold. The rig will wake on the same noise that should settle it.",
-                        MessageType.Warning);
+                EditorGUILayout.HelpBox(
+                    "These thresholds decide when a ragdoll is declared settled. On settle its " +
+                    "bodies are slept, so it stops costing script time and solver time until " +
+                    "something touches it.\n\n" +
+                    "There is no wake threshold to balance against: waking is driven by PhysX " +
+                    "contact, so any force at all brings it back.",
+                    MessageType.None);
                 EditorGUI.indentLevel--;
             }
             EditorGUILayout.EndFoldoutHeaderGroup();

@@ -47,7 +47,6 @@ namespace OnTwos.Runtime
         public float SettleVelocityThreshold = 0.75f;
         public float SettleAngularThreshold  = 25f;   // deg/s
         public float SettleTime              = 0.35f;
-        public float WakeVelocityThreshold   = 3.0f;
 
         [Header("Proxy rig")]
         public bool HideSourceRenderers  = true;
@@ -100,8 +99,15 @@ namespace OnTwos.Runtime
         private Transform[]  _visualBones;
         private GameObject   _visualProxyRoot;
 
-        private int   _anchorIndex;
         private bool  _initialized;
+
+        // Set whenever a held pose actually changes; cleared once it has been written to
+        // the proxy. Stepping produces a new pose ~12 times a second while FixedUpdate and
+        // LateUpdate together ask to write one 50-110 times a second, so without this the
+        // large majority of proxy transform writes re-assign values that did not change.
+        // Bones excluded from stepping follow physics unstepped, so they legitimately dirty
+        // the pose every tick — the saving only applies to bones that are actually held.
+        private bool  _posesDirty;
         private bool  _settled;
         private float _settleTimer;
         private float _startTime;
@@ -164,7 +170,6 @@ namespace OnTwos.Runtime
         return;
     }
 
-    _anchorIndex = RagdollProxyBuilder.PickAnchorIndex(_sourceBodies);
     InitSchedulers();
 
     Debug.Log(
@@ -219,6 +224,15 @@ namespace OnTwos.Runtime
             if (Profile != null && Profile.Global != null && !Profile.Global.Enabled)
                 return;
 
+            // Settled corpses exit here, before the prune scan and before any pose writes.
+            // The only work a settled ragdoll does is ask PhysX whether its bodies are still
+            // asleep, which is a native flag read per body and nothing else.
+            if (_settled)
+            {
+                if (!AnyBodyAwake()) return;
+                WakeFromSettled();
+            }
+
             PruneDestroyedBodies();
             if (_sourceBodies.Length == 0) return;
 
@@ -245,40 +259,13 @@ namespace OnTwos.Runtime
                         _schedulers[i].Reset(_sourceBodies[i].rotation);
                 }
                 _initialized = true;
+                _posesDirty  = true;
                 ApplyHeldPoses();
                 return;
             }
 
-            if (_settled)
-            {
-                if (AnchorWoke())
-                {
-                    _settled     = false;
-                    _settleTimer = 0f;
-
-                    // Reseed schedulers from current physics state so the
-                    // PCHIP window doesn't try to fit across the settle gap.
-                    for (int i = 0; i < _sourceBodies.Length; i++)
-                    {
-                        if (_sourceBodies[i] == null) continue;
-                        _heldPositions[i] = _sourceBodies[i].position;
-                        _heldRotations[i] = _sourceBodies[i].rotation;
-                        _rawRotations[i] = _sourceBodies[i].rotation;
-                        if (_schedulers[i] != null)
-                            _schedulers[i].Reset(_sourceBodies[i].rotation);
-                    }
-
-                    Debug.Log($"[RagdollStepper] {gameObject.name} woke at t+{t - _startTime:F2}s");
-                    OnWoke?.Invoke();
-                }
-                else
-                {
-                    ApplyHeldPoses();
-                    return;
-                }
-            }
-
             UpdateSettleState();
+            if (_settled) return;   // just settled this tick — poses already applied
 
             // Run the PCHIP pipeline for every tracked bone.
             for (int i = 0; i < _sourceBodies.Length; i++)
@@ -294,6 +281,7 @@ namespace OnTwos.Runtime
                     _heldRotations[i] = currentRot;
                     _heldPositions[i] = currentPos;
                     _rawRotations[i] = currentRot;
+                    _posesDirty = true;
                     continue;
                 }
 
@@ -318,9 +306,13 @@ namespace OnTwos.Runtime
                 // snaps on the cadence, and the epsilon read that as "no snap" and left
                 // the position held until PositionTau happened to trip on its own.
                 bool rotSnapped = _schedulers[i].DidSnap;
+                if (rotSnapped) _posesDirty = true;
 
                 if (rotSnapped || Vector3.Distance(_heldPositions[i], currentPos) >= posTau)
+                {
                     _heldPositions[i] = currentPos;
+                    _posesDirty = true;
+                }
             }
 
             ApplyHeldPoses();
@@ -336,6 +328,7 @@ namespace OnTwos.Runtime
         private void ApplyHeldPoses()
         {
             if (_visualBones == null || _heldPositions == null || _heldRotations == null) return;
+            if (!_posesDirty) return;
 
             // Visibility culling: skip the per-bone Transform writes while the proxy is
             // entirely off-screen. The PCHIP schedulers in FixedUpdate keep running so
@@ -350,6 +343,11 @@ namespace OnTwos.Runtime
                 _visualBones[i].position = _heldPositions[i];
                 _visualBones[i].rotation = _heldRotations[i];
             }
+
+            // Cleared only after a real write. The culling return above leaves it set, so a
+            // pose computed while the proxy was off-screen is still applied the moment it
+            // comes back into view rather than being silently dropped.
+            _posesDirty = false;
         }
 
         // Returns true if any Renderer on the visual proxy is currently on-screen.
@@ -369,20 +367,83 @@ namespace OnTwos.Runtime
         // ------------------------------------------------------------------ settle
         private void UpdateSettleState()
 {
-    if (AllBonesStill())
+    if (!AllBonesStill()) { _settleTimer = 0f; return; }
+
+    _settleTimer += Time.fixedDeltaTime;
+    if (_settleTimer < ResolveSettleTime()) return;
+
+    _settled = true;
+
+    // Freeze the visible pose one last time before the bodies stop reporting motion,
+    // so the corpse is drawn at where it actually came to rest. Forced, because the last
+    // tick before settling may not have produced a snap of its own.
+    _posesDirty = true;
+    ApplyHeldPoses();
+
+    // Put the bodies to sleep rather than waiting for PhysX to do it on its own.
+    // Jointed ragdolls frequently jitter above sleepThreshold indefinitely, so left
+    // alone a settled corpse keeps its whole joint island in the solver forever —
+    // which is most of the cost of a scene that accumulates bodies.
+    //
+    // Sleeping does NOT make them inert: PhysX wakes a sleeping body on any new
+    // contact or applied force, and CharacterJoint-connected bodies form a single
+    // island, so a punch to one hand wakes the entire ragdoll. That is what
+    // AnyBodyAwake() reads back.
+    for (int i = 0; i < _sourceBodies.Length; i++)
+        if (_sourceBodies[i] != null) _sourceBodies[i].Sleep();
+
+    Debug.Log($"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
+    OnSettled?.Invoke();
+}
+
+/// <summary>
+/// True when PhysX has woken any tracked body — the signal that something disturbed
+/// the corpse and it should start stepping again.
+///
+/// This replaces a velocity check on the anchor body alone. That check could not
+/// satisfy "any force wakes it": settling required *every* body to be still, but
+/// waking looked at *one*, so an impact that moved an outstretched arm without
+/// pushing the hips past a wake threshold left the proxy frozen at its settled
+/// pose while the real ragdoll visibly moved underneath it. Reading the sleep flag
+/// has no threshold and no deadzone, and PhysX has already done the work.
+/// </summary>
+private bool AnyBodyAwake()
+{
+    for (int i = 0; i < _sourceBodies.Length; i++)
     {
-        _settleTimer += Time.fixedDeltaTime;
-        if (_settleTimer >= ResolveSettleTime())
-        {
-            _settled = true;
-            Debug.Log($"[RagdollStepper] {gameObject.name} settled at t+{Time.fixedTime - _startTime:F2}s");
-            OnSettled?.Invoke();
-        }
+        Rigidbody rb = _sourceBodies[i];
+        // A destroyed or deactivated body counts as a disturbance: something removed a
+        // limb from the corpse, and the prune needs a tick to run.
+        if (rb == null || !rb.gameObject.activeInHierarchy) return true;
+        if (!rb.IsSleeping()) return true;
     }
-    else
+    return false;
+}
+
+/// <summary>
+/// Resume stepping after a settled ragdoll is disturbed. Reseeds every scheduler from
+/// live physics state so the PCHIP window doesn't try to fit a curve across the settle
+/// gap, which would otherwise read as a lurch on the first stepped frame after impact.
+/// </summary>
+private void WakeFromSettled()
+{
+    _settled     = false;
+    _settleTimer = 0f;
+
+    for (int i = 0; i < _sourceBodies.Length; i++)
     {
-        _settleTimer = 0f;
+        if (_sourceBodies[i] == null) continue;
+        _heldPositions[i] = _sourceBodies[i].position;
+        _heldRotations[i] = _sourceBodies[i].rotation;
+        _rawRotations[i]  = _sourceBodies[i].rotation;
+        if (_schedulers[i] != null)
+            _schedulers[i].Reset(_sourceBodies[i].rotation);
     }
+
+    _posesDirty = true;
+
+    Debug.Log($"[RagdollStepper] {gameObject.name} woke at t+{Time.fixedTime - _startTime:F2}s");
+    OnWoke?.Invoke();
 }
 
 private bool AllBonesStill()
@@ -401,21 +462,6 @@ private bool AllBonesStill()
             return false;
     }
     return true;
-}
-
-private bool AnchorWoke()
-{
-    if (_anchorIndex >= _sourceBodies.Length) return false;
-    Rigidbody rb = _sourceBodies[_anchorIndex];
-    if (rb == null) return false;
-#if UNITY_6000_0_OR_NEWER
-    float linSpeed = rb.linearVelocity.magnitude;
-#else
-    float linSpeed = rb.velocity.magnitude;
-#endif
-    float wakeVel = ResolveWakeVelocity();
-    return linSpeed >= wakeVel ||
-           rb.angularVelocity.magnitude * Mathf.Rad2Deg >= wakeVel * 6f;
 }
         // ------------------------------------------------------------------ proxy build
 
@@ -494,8 +540,6 @@ private bool AnchorWoke()
 
             if (_sourceBodies.Length == 0) return;
 
-            _anchorIndex = PickAnchorIndex(_sourceBodies);
-
             // The rule set resolves against _bodyTransforms, so it has to be rebuilt and
             // re-synced here too — otherwise the resolved arrays stay at the pre-prune
             // length and every index past the removed bone reads the wrong bone's rules.
@@ -522,18 +566,6 @@ private bool AnchorWoke()
                 current = current.parent;
             }
             return current == null ? string.Empty : string.Join("/", stack.ToArray());
-        }
-
-        private static int PickAnchorIndex(Rigidbody[] bodies)
-        {
-            int best = 0;
-            float bestMass = bodies[0] != null ? bodies[0].mass : float.MinValue;
-            for (int i = 1; i < bodies.Length; i++)
-            {
-                if (bodies[i] != null && bodies[i].mass > bestMass)
-                { bestMass = bodies[i].mass; best = i; }
-            }
-            return best;
         }
 
         // ------------------------------------------------------------------ cleanup
@@ -656,7 +688,5 @@ private float ResolveSettleAngular()
 private float ResolveSettleTime()
     => Profile != null ? Profile.Settling.SettleTime : SettleTime;
 
-private float ResolveWakeVelocity()
-    => Profile != null ? Profile.Settling.WakeVelocityThreshold : WakeVelocityThreshold;
     }
 }

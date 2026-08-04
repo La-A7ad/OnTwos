@@ -134,12 +134,9 @@ namespace OnTwos.Runtime
             public float SettleAngularThreshold = 25f;
 
             [Tooltip("How long all tracked bodies must stay below the still thresholds before " +
-                     "the ragdoll is declared settled and the proxy locks at its current pose.")]
+                     "the ragdoll is declared settled, its bodies are put to sleep, and the proxy " +
+                     "locks at its current pose. Any new contact or force wakes it again.")]
             public float SettleTime = 0.35f;
-
-            [Tooltip("Linear speed (m/s) on the anchor body that wakes the proxy back up " +
-                     "after settling — for example, when an external force disturbs the rig.")]
-            public float WakeVelocityThreshold = 3.0f;
         }
 
         [Serializable]
