@@ -36,10 +36,14 @@ as pending long after both shipped, which cost real time to rediscover.
   `CadenceJitter = 0`; above zero a parent and child can snap on different frames
   and briefly bend a limb in a way the source motion never did.
 
-- **Arc-length candidates use a one-frame-stale LUT.** Candidates are generated
-  before the spline is rebuilt by the evaluation calls that follow, so they are
-  placed against the previous frame's LUT. Small at animation sample rates, but a
-  real off-by-one-frame in the reparameterisation.
+- **Arc-length candidates use a stale LUT.** Candidates are generated before
+  anything rebuilds the spline for the current tick: `ArcLengthCandidates` reads the
+  LUT directly and never triggers a refit, and the calls that do (`Evaluate`,
+  `Derivative`) run either earlier — the extrema scan, every tenth frame — or later,
+  in the τ walk. Staleness is therefore bounded by the extrema interval, up to ten
+  frames rather than one, and stretches further whenever a bone sits inside its
+  `MinHoldSeconds` window and evaluates nothing at all. Unreachable at
+  `CadenceJitter = 0`.
 
 ## Done
 
@@ -63,7 +67,18 @@ as pending long after both shipped, which cost real time to rediscover.
   per tick** (50 ragdolls: 2.02 ms → 0.08 ms of a 20 ms budget), and baking gets the
   same speedup. Verified bit-identical across 17 step-rate/framerate configurations
   and 68,000 frames including a mid-run `Reset()`, which is what preserves parity
-  between baked clips and the Play mode preview.
+  between baked clips and the Play mode preview. Bit-identity is a property of this
+  path specifically, which copies the incoming rotation; the general `forceSnap`
+  branch evaluates the curve instead and agrees only as a rotation, not as bits.
+
+- **EditMode test harness.** `Tests/` drives `HoldFrameScheduler` directly with
+  synthetic rotation streams — no scene, Animator or Play mode. Covers locked-cadence
+  behaviour across a 20-configuration step-rate × framerate grid (every emitted pose
+  is bitwise a raw input sample; the beat holds its grid without cumulative drift;
+  output is constant between snaps), steady-state allocation, and how often
+  evaluating at the newest knot reproduces the input bitwise. 88 cases. The
+  performance and parity numbers in this file and in `TECHNICAL.md` §7 previously had
+  no artifact behind them and could not be re-run; now they can.
 
 - **Redundant proxy writes removed.** `FixedUpdate` and `LateUpdate` together asked to
   write the proxy pose 50-110 times a second to express ~12 actual pose changes. A

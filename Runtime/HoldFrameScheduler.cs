@@ -195,12 +195,17 @@ namespace OnTwos.Runtime.Math
             // Locked cadence bypasses the entire spline pipeline.
             //
             // forceSnap is tested before the Tau branch below, so when the two hold bounds
-            // are equal the candidate walk is unreachable — the extrema scan, the segment
-            // boundaries and the arc-length candidates are computed and then discarded,
-            // every bone, every tick. The one value forceSnap does consume,
-            // _sampler.Evaluate(tEnd), is the PCHIP curve evaluated at its own newest knot,
-            // and PCHIP interpolates through its knots — so it is just boneRotation back
-            // again, reached via a full refit and an 80-point arc-length LUT rebuild.
+            // are equal the candidate walk is unreachable. Without this guard the extrema
+            // scan, the segment boundaries and the arc-length candidates were computed and
+            // then discarded, every bone, every tick, all to reach a forced snap that only
+            // ever needed the newest sample.
+            //
+            // This path assigns boneRotation directly rather than evaluating the curve at
+            // its newest knot. PCHIP interpolates its knots, so the two agree as rotations
+            // (measured deviation 0.000000 deg), but only the direct copy is bit-identical
+            // to the input: Evaluate renormalises, and QuaternionSignNorm may have negated
+            // the newest sample before fitting. Bit-identity is a property of this branch,
+            // not of the general forceSnap branch further down.
             //
             // Measured on a 13-bone humanoid at 50Hz: 40.4us -> 1.5us per rig per tick.
             //

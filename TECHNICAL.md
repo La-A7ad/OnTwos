@@ -421,6 +421,15 @@ MinHoldSeconds = MaxHoldSeconds · (1 − CadenceJitter)  # earliest a snap may 
 - **`MaxHoldSeconds`** — a ceiling. Snap after it regardless of τ. Prevents a
   frozen pose during slow or near-static motion.
 
+Note that "default" means two different things here, and they disagree. A
+`HoldFrameScheduler` constructed on its own defaults to `MinHoldSeconds = 0` and
+`MaxHoldSeconds = +∞`, which is *not* locked — with no ceiling, `forceSnap` can
+never fire and stepping is purely τ-driven. Locking comes from the profile: a
+default `OnTwosProfile` carries `StepRate = 12` and `CadenceJitter = 0`, which
+resolve to `Min = Max = 1/12 s` and satisfy the locked predicate. Every statement
+below about locked cadence being "the default" refers to the default *profile*,
+not the class.
+
 **Why seconds and not tick counts.** Counting `Update()` calls makes the cadence
 depend on whoever drives the scheduler. `AnimationStepper` ticks once per rendered
 frame, so "hold 2 ticks" is 72 poses/sec at 144 fps but 15 at 30 fps — a 4.8×
@@ -459,16 +468,28 @@ This reads as stutter when unintended — but it is also a legitimate deliberate
 effect, and it's the same idea as Spider-Punk's jacket running on a different rate
 from his body.
 
-**An honest note on what locking costs.** With `CadenceJitter = 0`, `forceSnap`
-assigns `held = evaluate(tEnd)`, where `tEnd` is the timestamp of the sample just
-added — the newest knot. Since PCHIP interpolates its knots exactly, this returns
-the raw incoming rotation. In locked mode the output is therefore *exactly*
-"resample the raw pose every 1/StepRate seconds", and the spline, extrema detection
+**An honest note on what locking costs.** With `CadenceJitter = 0` the scheduler
+takes a dedicated locked path that assigns `held = boneRotation` — the incoming
+rotation, copied verbatim — and returns before the spline is touched at all. In
+locked mode the output is therefore *exactly* "resample the raw pose every
+1/StepRate seconds", bit for bit, and the spline, extrema detection
 and arc-length machinery contribute nothing to the result. All of that
 sophistication earns its keep only when jitter is above zero, where τ decides both
 **whether**
 and **where** to snap. This is worth knowing before concluding the algorithm
 isn't doing anything: in the most common configuration, it isn't.
+
+That bit-for-bit claim belongs to the locked path and nowhere else. The general
+`forceSnap` branch — reachable only above zero jitter — instead assigns
+`held = evaluate(tEnd)`, the curve evaluated at its own newest knot. PCHIP
+interpolates its knots, so this returns the same *rotation*: measured deviation is
+0.000000° across every sample tested. It does not return the same *bits*.
+Evaluation renormalises, and hemisphere normalisation may have negated the newest
+sample before fitting. Over a 597-tick window it matches the incoming rotation
+bitwise 73% of the time on hemisphere-consistent input and 26% on inconsistent
+input, where it is instead an exact negation about half the time. Nothing
+downstream is affected, because `Quaternion.Angle` treats `q` and `−q` alike — but
+the two branches are not interchangeable, and only one of them is a copy.
 
 ---
 
@@ -804,11 +825,16 @@ Stated plainly, because a technical document that omits them isn't useful.
   extrema and arc-length work contribute nothing. Since locked cadence is the
   configuration that produces the classic look, the sophisticated path is not the
   one most users will run.
-- **Arc-length candidates use a one-frame-stale LUT.** Within `Update()`,
-  candidates are generated before the spline is rebuilt by the evaluation calls
-  that follow, so they're placed against the previous frame's LUT. At animation
-  sample rates the error is small, but it is a real off-by-one-frame in the
-  reparameterisation.
+- **Arc-length candidates use a stale LUT.** Within `Update()`, candidates are
+  generated before anything has rebuilt the spline for this tick.
+  `ArcLengthCandidates` reads the LUT arrays directly and never triggers a refit;
+  the only calls that do are `Evaluate` and `Derivative`, which run either earlier
+  (the extrema scan, every tenth frame) or later (the τ walk). So on the nine
+  frames between scans the candidates are placed against an older LUT — and if the
+  bone is still inside its `MinHoldSeconds` window no evaluation runs at all that
+  tick, leaving the LUT unrefreshed for longer. Staleness is bounded by the extrema
+  interval: up to ten frames, not one. Unreachable at `CadenceJitter = 0`, where
+  the locked path returns before any of it runs.
 - **Chain coherence is not modelled.** Each bone decides independently. A locked
   cadence moves the whole chain together so this rarely shows, but with jitter above
   zero a parent and child can snap on different frames, briefly bending a limb in a
