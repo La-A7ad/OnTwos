@@ -102,6 +102,13 @@ namespace OnTwos.Runtime.Math
         // clamped to 4, so this is always large enough.
         private readonly float[] _segCandidates = new float[4];
 
+        // Two candidates closer together than this are treated as the same moment and
+        // merged. Matches ExtremaDetector.MinSegment (~1 frame at 60Hz), which collapses
+        // extrema on the same grounds: below a frame they are numerically
+        // indistinguishable, and a duplicate would only make the Tau walk compare the
+        // held pose against itself.
+        private const float CandidateMergeTolerance = 0.016f;
+
         /// <summary>
         /// True when the cadence bounds coincide, i.e. <c>CadenceJitter = 0</c> — the
         /// metronomic case. The Tau-gated candidate walk cannot run in this configuration
@@ -263,7 +270,38 @@ namespace OnTwos.Runtime.Math
                 for (int i = 0; i < written; i++)
                     _candidates.Add(_segCandidates[i]);
             }
+
+            // Interior segment boundaries are the detected motion extrema, and they are
+            // eligible snap moments in their own right. ArcLengthCandidates places its
+            // points strictly inside each segment — the (i+1)/(n+1) parameterisation never
+            // reaches either end — so without this the walk could snap just before a
+            // turning point or just after it, but never on it. The extremes are precisely
+            // where an animator spends a drawing, so excluding them inverted the intent of
+            // the whole arc-length scheme.
+            //
+            // Index 0 is tStart and the last entry is tEnd. Both are window edges, not
+            // extrema, and must not be added: tEnd is the newest sample, already reachable
+            // via forceSnap, and tStart is an artefact of where the buffer happens to begin.
+            for (int i = 1; i < _boundaries.Count - 1; i++)
+                _candidates.Add(_boundaries[i]);
+
             _candidates.Sort();
+
+            // Merge near-duplicates in place. An extremum and an arc-length point from an
+            // adjoining segment can land within the same frame. Compaction writes back over
+            // the existing backing array and RemoveRange only moves elements, so the hot
+            // path stays allocation-free.
+            int keep = 0;
+            for (int read = 0; read < _candidates.Count; read++)
+            {
+                if (keep > 0 &&
+                    _candidates[read] - _candidates[keep - 1] < CandidateMergeTolerance)
+                    continue;
+
+                _candidates[keep++] = _candidates[read];
+            }
+            if (keep < _candidates.Count)
+                _candidates.RemoveRange(keep, _candidates.Count - keep);
 
             // Cadence gate, in seconds of the caller's timebase.
             float heldFor   = time - _lastSnapTime;

@@ -45,6 +45,19 @@ as pending long after both shipped, which cost real time to rediscover.
   `MinHoldSeconds` window and evaluates nothing at all. Unreachable at
   `CadenceJitter = 0`.
 
+- **The τ walk overwrites extrema it lands on.** The walk advances through every
+  candidate exceeding τ and keeps the last one, so an extremum is visited and then
+  discarded whenever a later candidate also qualifies. This is why making extrema
+  eligible moved peak error in only some configurations. Stopping the walk at an
+  extremum would land poses on the extremes reliably, but §4.5 chains deliberately to
+  keep the held pose current rather than lagging — an aesthetic trade, not a defect.
+
+- **Extrema are detected up to ten frames late.** `ExtremaDetector` runs every tenth
+  frame, so a turning point is on average five and at worst ten frames old before it
+  can be a candidate at all. At 60 fps and `StepRate = 12` that is one to two entire
+  step intervals. Scanning more often is the obvious fix and directly inflates the
+  adaptive path, already ~160× the cost of the locked one.
+
 ## Done
 
 - **Ragdoll settle/wake lifecycle.** Settling now puts every tracked body to
@@ -70,6 +83,22 @@ as pending long after both shipped, which cost real time to rediscover.
   between baked clips and the Play mode preview. Bit-identity is a property of this
   path specifically, which copies the incoming rotation; the general `forceSnap`
   branch evaluates the curve instead and agrees only as a rotation, not as bits.
+
+- **Extrema are snap candidates.** Arc-length placement is strictly interior to each
+  monotone segment, so the detected extrema — the segment boundaries themselves —
+  were never eligible: the walk could snap either side of a turning point but never
+  on it, which is the opposite of spending a pose where the motion happens. Interior
+  boundaries are now added to the candidate list, and the merged list is deduplicated
+  at one frame, matching `ExtremaDetector.MinSegment`. Locked output is byte-identical
+  across all 20 harness configurations — verified by signature diff, not inspection —
+  and the hot path stays at 0 B/frame.
+
+  The measured effect is real but not a clean win. Every adaptive configuration's
+  output changed, so the fix is not inert. Peak deviation from the source improved in
+  two of seven configurations, most at 12 poses/sec and 144 fps (17.69° → 15.08°), was
+  unchanged in four, and worsened in one (24.48° → 25.37°). Mean deviation moved by at
+  most 0.32° either way. Adaptive cost rose ~2%, 269 → 275 µs per 13-bone rig per tick.
+  The two items under Open explain why the benefit is inconsistent.
 
 - **EditMode test harness.** `Tests/` drives `HoldFrameScheduler` directly with
   synthetic rotation streams — no scene, Animator or Play mode. Covers locked-cadence

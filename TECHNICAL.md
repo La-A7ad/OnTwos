@@ -373,6 +373,17 @@ curve is degenerate there and it falls back to equal-time spacing.
 Both LUT arrays are preallocated in the constructor and overwritten in place on
 every rebuild — one of the few places in the runtime that's genuinely allocation-free.
 
+**The segment boundaries are candidates too.** Arc-length placement is strictly
+interior — the `(i+1)/(n+1)` parameterisation never reaches either end of a segment
+— so on its own it can put a snap just before a turning point or just after it, but
+never on it. That inverts the intent: the extremes are exactly where a drawing
+should be spent. The interior boundaries, which are the detected extrema, are
+therefore added to the candidate list alongside the arc-length points, and the
+merged list is deduplicated at one frame. The window edges are not added: `tEnd` is
+the newest sample and already reachable through the forced snap, and `tStart` is an
+artefact of where the ring buffer happens to begin rather than a feature of the
+motion.
+
 ### 4.5 The deviation threshold
 
 The actual hold decision. **τ (tau)**, in degrees, is the amount of angular
