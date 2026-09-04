@@ -373,6 +373,12 @@ curve is degenerate there and it falls back to equal-time spacing.
 Both LUT arrays are preallocated in the constructor and overwritten in place on
 every rebuild — one of the few places in the runtime that's genuinely allocation-free.
 
+The corollary of doing no evaluation at query time is that the query cannot refit:
+`ArcLengthCandidates` reads whatever the LUT last held. Keeping it current is
+therefore the caller's job, and `HoldFrameScheduler` does it by evaluating the newest
+knot before the candidate pass. It did not always: against a LUT left to age a full
+extrema interval, candidate placement drifted by up to 22.4°.
+
 **The segment boundaries are candidates too.** Arc-length placement is strictly
 interior — the `(i+1)/(n+1)` parameterisation never reaches either end of a segment
 — so on its own it can put a snap just before a turning point or just after it, but
@@ -683,11 +689,16 @@ that means in practice is that the spline refit, the arc-length LUT and the extr
 scan were being computed and discarded every bone every tick. `HoldFrameScheduler`
 now detects the locked case and takes a fast path: the sample is still appended and
 every timing-relevant branch still runs, but the pipeline is skipped and the held
-pose is taken directly from the incoming rotation — which is what evaluating the
-spline at its own newest knot returns anyway. Measured on a 13-bone humanoid at
-50 Hz, **40.4 µs → 1.5 µs per rig per tick**. Output is bit-identical across 17
-step-rate/framerate configurations and 68,000 frames, which is what preserves parity
-with baked clips, since `OnTwosBakeWindow` drives this same scheduler.
+pose is taken directly from the incoming rotation — copied verbatim, which is what
+makes locked output bit-identical to uniform resampling. Evaluating the spline at its
+own newest knot returns the same *rotation* but not the same *bits* (§4.6), so that
+equivalence belongs to this branch and not to the general forced snap. Measured on a
+13-bone humanoid at 50 Hz, **40.4 µs → 1.5 µs per rig per tick**. Output is
+bit-identical across all 20 step-rate/framerate configurations in the `Tests/`
+harness, which is what preserves parity with baked clips, since `OnTwosBakeWindow`
+drives this same scheduler. (The figure originally quoted here — 17 configurations
+and 68,000 frames — came from a scratch A/B harness that no longer exists; the
+in-repo grid is what can now be re-run.)
 
 **Settled ragdolls leave the simulation.** `RagdollStepper` puts every tracked body
 to sleep once it settles, rather than only freezing the visual writes. A resting
@@ -836,16 +847,17 @@ Stated plainly, because a technical document that omits them isn't useful.
   extrema and arc-length work contribute nothing. Since locked cadence is the
   configuration that produces the classic look, the sophisticated path is not the
   one most users will run.
-- **Arc-length candidates use a stale LUT.** Within `Update()`, candidates are
-  generated before anything has rebuilt the spline for this tick.
-  `ArcLengthCandidates` reads the LUT arrays directly and never triggers a refit;
-  the only calls that do are `Evaluate` and `Derivative`, which run either earlier
-  (the extrema scan, every tenth frame) or later (the τ walk). So on the nine
-  frames between scans the candidates are placed against an older LUT — and if the
-  bone is still inside its `MinHoldSeconds` window no evaluation runs at all that
-  tick, leaving the LUT unrefreshed for longer. Staleness is bounded by the extrema
-  interval: up to ten frames, not one. Unreachable at `CadenceJitter = 0`, where
-  the locked path returns before any of it runs.
+- **The τ walk overwrites extrema it lands on.** The walk advances through every
+  candidate exceeding τ and keeps the last one, so an extremum is visited and then
+  discarded whenever a later candidate also qualifies. §4.5 chains deliberately, to
+  keep the held pose current rather than lagging, so this is an aesthetic trade
+  rather than a defect — but it is why making extrema eligible (§4.4) improved peak
+  error in some configurations and not others.
+- **Extrema are detected up to ten frames late.** `ExtremaDetector` runs every tenth
+  frame, so a turning point is on average five and at worst ten frames old before it
+  can be a candidate at all. At 60 fps and `StepRate = 12` that is one to two whole
+  step intervals. Scanning more often is the obvious fix and inflates the adaptive
+  path directly, which already costs ~180× the locked one.
 - **Chain coherence is not modelled.** Each bone decides independently. A locked
   cadence moves the whole chain together so this rarely shows, but with jitter above
   zero a parent and child can snap on different frames, briefly bending a limb in a

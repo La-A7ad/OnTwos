@@ -36,15 +36,6 @@ as pending long after both shipped, which cost real time to rediscover.
   `CadenceJitter = 0`; above zero a parent and child can snap on different frames
   and briefly bend a limb in a way the source motion never did.
 
-- **Arc-length candidates use a stale LUT.** Candidates are generated before
-  anything rebuilds the spline for the current tick: `ArcLengthCandidates` reads the
-  LUT directly and never triggers a refit, and the calls that do (`Evaluate`,
-  `Derivative`) run either earlier — the extrema scan, every tenth frame — or later,
-  in the τ walk. Staleness is therefore bounded by the extrema interval, up to ten
-  frames rather than one, and stretches further whenever a bone sits inside its
-  `MinHoldSeconds` window and evaluates nothing at all. Unreachable at
-  `CadenceJitter = 0`.
-
 - **The τ walk overwrites extrema it lands on.** The walk advances through every
   candidate exceeding τ and keeps the last one, so an extremum is visited and then
   discarded whenever a later candidate also qualifies. This is why making extrema
@@ -56,7 +47,7 @@ as pending long after both shipped, which cost real time to rediscover.
   frame, so a turning point is on average five and at worst ten frames old before it
   can be a candidate at all. At 60 fps and `StepRate = 12` that is one to two entire
   step intervals. Scanning more often is the obvious fix and directly inflates the
-  adaptive path, already ~160× the cost of the locked one.
+  adaptive path, already ~180× the cost of the locked one.
 
 ## Done
 
@@ -78,8 +69,10 @@ as pending long after both shipped, which cost real time to rediscover.
   every tick. `HoldFrameScheduler` now detects the locked case and skips the pipeline
   while preserving every timing-relevant branch. **40.4 µs → 1.5 µs per 13-bone rig
   per tick** (50 ragdolls: 2.02 ms → 0.08 ms of a 20 ms budget), and baking gets the
-  same speedup. Verified bit-identical across 17 step-rate/framerate configurations
-  and 68,000 frames including a mid-run `Reset()`, which is what preserves parity
+  same speedup. Originally verified bit-identical across 17 step-rate/framerate
+  configurations and 68,000 frames including a mid-run `Reset()`, on a scratch A/B
+  harness that no longer exists; the in-repo replacement covers 20 configurations and
+  is the version that can actually be re-run. Either way it is what preserves parity
   between baked clips and the Play mode preview. Bit-identity is a property of this
   path specifically, which copies the incoming rotation; the general `forceSnap`
   branch evaluates the curve instead and agrees only as a rotation, not as bits.
@@ -100,12 +93,32 @@ as pending long after both shipped, which cost real time to rediscover.
   most 0.32° either way. Adaptive cost rose ~2%, 269 → 275 µs per 13-bone rig per tick.
   The two items under Open explain why the benefit is inconsistent.
 
+- **Arc-length candidates use a current LUT.** `ArcLengthCandidates` reads the LUT
+  arrays directly and never refits — deliberate, and what keeps placement
+  allocation-free — but nothing else brought the spline up to date for the tick
+  either. The extrema scan runs every tenth frame and the τ walk's `Evaluate` calls
+  come afterwards, so on most ticks candidates were placed against an older LUT, and
+  a bone inside its `MinHoldSeconds` window evaluated nothing at all. The newest-knot
+  evaluation the forced-snap branch already performed is now hoisted above the extrema
+  scan, so the refit happens before anything reads the LUT and the value is reused
+  rather than computed twice.
+
+  This was previously recorded here as one frame of staleness. Measured, it reached
+  **22.4° of candidate displacement** at a ten-frame gap — wider than a typical τ, so
+  it was moving snap decisions rather than rounding them. Unlike the extrema change
+  above, the fix is a clean win: peak deviation improved in all seven adaptive
+  configurations (best 25.37° → 18.05° at 8 poses/sec) and mean deviation in five of
+  seven. Locked output is byte-identical across all 20 harness configurations, so bake
+  parity is untouched. Adaptive cost rose 279 → 329 µs per 13-bone rig per tick,
+  because ticks that previously evaluated nothing now pay for a refit; allocation
+  stays at 0 B/frame.
+
 - **EditMode test harness.** `Tests/` drives `HoldFrameScheduler` directly with
   synthetic rotation streams — no scene, Animator or Play mode. Covers locked-cadence
   behaviour across a 20-configuration step-rate × framerate grid (every emitted pose
   is bitwise a raw input sample; the beat holds its grid without cumulative drift;
   output is constant between snaps), steady-state allocation, and how often
-  evaluating at the newest knot reproduces the input bitwise. 88 cases. The
+  evaluating at the newest knot reproduces the input bitwise. 89 cases. The
   performance and parity numbers in this file and in `TECHNICAL.md` §7 previously had
   no artifact behind them and could not be re-run; now they can.
 
