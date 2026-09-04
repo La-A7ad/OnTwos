@@ -234,6 +234,25 @@ namespace OnTwos.Runtime.Math
                 return _held;
             }
 
+            // Bring the PCHIP fit and the arc-length LUT up to date for this tick before
+            // anything reads them.
+            //
+            // ArcLengthCandidates performs no rebuild by design — it interpolates the LUT
+            // arrays directly, which is what makes it allocation-free. Only Evaluate and
+            // Derivative refit, and previously neither ran before candidate placement on
+            // most ticks: the extrema scan is throttled to every tenth frame, and the Tau
+            // walk's Evaluate calls come after. A bone still inside its MinHoldSeconds
+            // window evaluated nothing at all, so one LUT could serve a whole extrema
+            // interval. Measured candidate displacement from that staleness reached 22.4
+            // degrees at a ten-frame gap — wider than a typical Tau, so it moved real
+            // snap decisions rather than rounding them.
+            //
+            // tEnd is the newest knot, which is also exactly what the forced-snap branch
+            // below assigns, so it is evaluated once here and reused rather than twice.
+            // Nothing between this line and that branch adds a sample, so the value cannot
+            // go stale within the tick.
+            Quaternion newestEvaluated = _sampler.Evaluate(tEnd);
+
             // Recompute extrema only every ExtremaInterval frames.
             if (_framesSinceExtremaScan >= ExtremaInterval)
             {
@@ -315,7 +334,7 @@ namespace OnTwos.Runtime.Math
             if (forceSnap)
             {
                 // Force snap to the latest evaluated pose and restart the hold clock.
-                _held = _sampler.Evaluate(tEnd);
+                _held = newestEvaluated;
                 DidSnap = true;
                 AdvanceSnapGrid(time, heldFor);
             }
