@@ -32,7 +32,7 @@ than writing back into the constrained bodies.
 
 The evidence for this is good and is set out in §3.
 
-### 2b. The algorithm claim — currently unsupported, and undercut by our own ablation
+### 2b. The algorithm claim — measured, and not supported
 
 *When* to snap: PCHIP fit over a rolling window, extrema detection, arc-length-weighted
 candidate placement, deviation threshold.
@@ -50,6 +50,35 @@ in it.
 
 This is the first thing a reviewer will probe, and it must be reported, not buried. But
 it is not fatal, because it is also a research question (§6).
+
+**The placement result (2026-09-04).** The ablation only covers `CadenceJitter = 0`, where
+the candidate walk never runs at all. The obvious rejoinder is that the mathematics earns
+its keep *above* zero jitter, where it does run. That has now been measured, and it does
+not.
+
+At a matched pose budget — adaptive first, then fixed-rate resampling at whatever pose
+count adaptive chose, so neither can win by simply snapping more — adaptive placement does
+not land held poses closer to the motion's true extrema than a uniform metronome does.
+Across 36 configurations spanning two motion densities and a swept budget, the differences
+are mostly under a degree and inconsistent in sign, and adaptive loses more often than it
+wins on both directions measured: precision (is a typical drawing spent on an extreme) and
+coverage (is every extreme represented by some drawing). Ground truth was the analytic
+derivative of the test motion's own angle function, never `ExtremaDetector` — scoring the
+system against its own opinion would only have established that it agrees with itself.
+`Tests/ExtremaAlignmentTests.cs` runs it.
+
+The mechanism is more useful than the null. **At any cadence a viewer accepts as stepped
+animation, the pose budget runs 7–39× the extremum count**, so both strategies already
+cover every extremum and there is nothing left to allocate. The "spend drawings where the
+motion is" intuition assumes a scarcity that the operating regime does not have. Reaching
+even one pose per extremum required a deliberately high-frequency motion, and the result
+there was mixed rather than favourable. That is a structural argument, and structural
+arguments survive review better than null results do.
+
+Stated against overclaiming in the other direction: two synthetic motions, both sinusoidal
+about a fixed axis, one τ, one bone with no chain, and an objective proxy for the premise
+rather than for perceptual quality. The result says the stated mechanism does not operate
+as described. It does not say the output looks the same — that is still §6.
 
 ---
 
@@ -129,32 +158,45 @@ Stated plainly so it doesn't creep into the paper.
 
 ---
 
-## 6. The missing piece: there is no experiment
+## 6. The missing piece: the evaluation is objective only
 
-The project currently has an implementation and zero experiments. The 2026-08-04
-measurements were performance and correctness — engineering validation, not results.
+The project has an implementation, one objective experiment (§2b), and no perceptual data
+at all. The 2026-08-04 measurements were performance and correctness — engineering
+validation, not results. The 2026-09-04 placement measurement *is* a result, but it is a
+proxy: it scores where poses land relative to the motion, not what a viewer sees.
 
 ### The question the ablation hands us
 
 > Does content-adaptive hold placement produce a perceptibly better stop-motion look than
 > fixed-rate resampling?
 
-Unanswered, and worth answering either way. If **yes**, the entire apparatus is justified
-and the paper has shown *why* animators place holds at extremes rather than on a
-metronome. If **no**, that is an honest negative result — "the sophisticated approach is
-perceptually indistinguishable from the naive one" is genuinely useful and nobody has
-published it for this problem.
+**The objective half is now answered, and the answer is no** — adaptive placement does not
+put poses nearer the extremes than a metronome, and at realistic budgets there is no
+scarcity for it to exploit (§2b). The perceptual half is still open, and it is the half
+that decides the claim. "Lands in the same places" and "looks the same" are different
+statements: a stop-motion read could plausibly depend on hold *duration* structure, on
+where the beat sits relative to the action, or on properties this metric does not capture
+at all.
+
+Worth answering either way, and the incentive has not changed. If viewers **can** tell
+them apart despite the placement measurement, that is the more interesting paper — the
+apparatus does something the obvious metric fails to see, and finding out what would be a
+genuine contribution. If they **cannot**, the negative result is complete rather than
+half-stated: "the sophisticated approach is perceptually indistinguishable from the naive
+one" is genuinely useful and nobody has published it for this problem.
 
 ### Minimum viable evaluation
 
 - **A perceptual study.** Do viewers identify the output as stop-motion? Do they prefer
   it to smooth playback? Can they distinguish adaptive from fixed-rate?
 - **The naive baseline, honestly reported.** Fixed-rate resampling vs. adaptive mode.
-  This is the comparison that decides whether 2b exists at all.
+  This is the comparison that decides whether 2b exists at all. *Objectively done (§2b) —
+  adaptive does not place poses better. The perceptual comparison is still owed.*
 - **More than N=1.** One Mixamo clip on one rig is a demo. Motion type matters
   structurally here — a walk cycle and a punch have completely different extremum
   distributions, and the algorithm's whole premise is that it spends drawings where the
-  motion is interesting.
+  motion is interesting. *§2b used two synthetic motions chosen for extremum density, not
+  captured motion, which is the limitation most likely to be challenged.*
 - **The smear working**, since it is the most distinctive idea (§8).
 
 ---
