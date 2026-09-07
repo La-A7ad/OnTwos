@@ -1,0 +1,435 @@
+---
+title: "OnTwos - complete algorithm, line by line (branch poster-fixes-2026-09-04)"
+config:
+  flowchart:
+    wrappingWidth: 420
+    nodeSpacing: 55
+    rankSpacing: 65
+    padding: 12
+---
+flowchart TD
+%% =====================================================================
+%% OnTwos - what it does and exactly how.
+%%
+%% Every node is annotated with the file and line it describes, against
+%% branch poster-fixes-2026-09-04. Line numbers move when the code moves;
+%% the file:line tags are the contract, not decoration.
+%%
+%% Reading order: 1 drivers, 2 config, 3 the scheduler (the algorithm
+%% proper), then 4-6 for the maths it calls into, then 7 for the physics
+%% decoupling that makes the ragdoll case possible at all.
+%%
+%% Render:  mmdc -i ALGORITHM.mmd -o ALGORITHM.svg
+%% =====================================================================
+
+%% ---------------------------------------------------------------------
+%% 0. WHAT THE SYSTEM IS FOR
+%% ---------------------------------------------------------------------
+subgraph WHAT["0 · THE PROBLEM"]
+    direction TB
+    W1["Smooth motion updates every frame.<br/>Hand-drawn and stop-motion animation<br/>hold each pose for 2-3 frames — 'on twos'."]
+    W2["Goal: quantise motion in TIME<br/>without touching the thing producing it.<br/>Animator, IK and physics keep running at full rate;<br/>only what is DRAWN is held."]
+    W3["Two hard constraints:<br/>1 CAUSAL — no lookahead, this is live<br/>2 NON-INVASIVE — the held pose must never<br/>enter the physics solver's state"]
+    W1 --> W2 --> W3
+end
+
+%% ---------------------------------------------------------------------
+%% 1. ENTRY POINTS
+%% ---------------------------------------------------------------------
+subgraph DRIVERS["1 · ENTRY POINTS — three things tick the same scheduler"]
+    direction TB
+
+    DA["<b>AnimationStepper.LateUpdate</b><br/>AnimationStepper.cs:344<br/>runs once per RENDERED frame<br/>t = Time.time - _startTime  ·:349"]
+    DB["<b>RagdollStepper.FixedUpdate</b><br/>RagdollStepper.cs:220<br/>runs on the FIXED 50 Hz physics clock<br/>t = Time.fixedTime  ·:239"]
+    DC["<b>OnTwosBakeWindow</b><br/>Editor/OnTwosBakeWindow.cs:275<br/>runs once per SOURCE CLIP frame,<br/>offline, writing constant-interpolation keys"]
+
+    DNOTE["All three pass a REAL TIMESTAMP.<br/>That is why cadence is measured in seconds,<br/>not in Update calls — otherwise one StepRate<br/>would mean three different looks.<br/>HoldFrameScheduler.cs:26-33"]
+
+    DA --- DNOTE
+    DB --- DNOTE
+    DC --- DNOTE
+end
+
+%% ---------------------------------------------------------------------
+%% 1b. RAGDOLL PER-TICK ENVELOPE
+%% ---------------------------------------------------------------------
+subgraph RAGTICK["1b · RagdollStepper.FixedUpdate envelope — RagdollStepper.cs:220-319"]
+    direction TB
+
+    R0{"_settled ?<br/>:230"}
+    R1{"AnyBodyAwake ?<br/>reads Rigidbody.IsSleeping<br/>per body  :410-421"}
+    R2["RETURN — a settled corpse costs<br/>one native flag read per body<br/>and nothing else  :232"]
+    R3["<b>WakeFromSettled</b>  :428<br/>reseed held pos/rot from live physics,<br/>scheduler.Reset per bone :440<br/>so PCHIP does not fit across the settle gap"]
+    R4["PruneDestroyedBodies  :236<br/>rebuild index-parallel arrays after<br/>dismemberment; exclusion re-resolved<br/>by BoneRuleSet so it cannot desync"]
+    R5["Resolve live config  :240-244<br/>tau · posTau · candidates<br/>maxHold · minHold"]
+    R6["SyncBoneRules  :248<br/>no-op unless profile or tunings<br/>changed — reference comparison"]
+    R7{"_initialized ?<br/>:250"}
+    R8["Seed every bone from physics,<br/>Reset every scheduler, apply, return<br/>:252-264"]
+    R9["<b>UpdateSettleState</b>  :368<br/>AllBonesStill for SettleTime seconds<br/>-> _settled = true, freeze pose,<br/>Rigidbody.Sleep on every body :392-393"]
+    R10["<b>per tracked body loop</b>  :271"]
+    R11{"excluded by<br/>BoneRuleSet ?<br/>:279"}
+    R12["copy raw pose straight through —<br/>an excluded bone follows physics<br/>unstepped  :281-285"]
+    R13["response = ResponseCurve.Evaluate<br/>clamp01 degPerSec / MaxDegreesPerSecond<br/>:290 · AnimationStepper.cs:727-754<br/>boneTau = baseTau x response"]
+    R14["push Tau · CandidatesPerSegment<br/>· MinHoldSeconds · MaxHoldSeconds<br/>onto the scheduler  :295-298"]
+    R15["<b>_heldRotations[i] = scheduler.Update(t, rot)</b><br/>:300"]
+    R16{"DidSnap<br/>OR moved >= posTau ?<br/>:308-311"}
+    R17["snap held POSITION too —<br/>read from DidSnap, not from an<br/>angle epsilon, which could not tell<br/>a cadence snap on a still body<br/>from no snap  :303-309"]
+    R18["<b>ApplyHeldPoses</b>  :328<br/>gated on _posesDirty :331<br/>and on visibility :337<br/>writes proxy .position/.rotation"]
+
+    R0 -- yes --> R1
+    R1 -- "all asleep" --> R2
+    R1 -- "any awake" --> R3
+    R0 -- no --> R4
+    R3 --> R4
+    R4 --> R5 --> R6 --> R7
+    R7 -- no --> R8
+    R7 -- yes --> R9
+    R9 --> R10
+    R10 --> R11
+    R11 -- yes --> R12
+    R11 -- no --> R13 --> R14 --> R15 --> R16
+    R16 -- yes --> R17
+    R12 --> R18
+    R16 -- no --> R18
+    R17 --> R18
+end
+
+%% ---------------------------------------------------------------------
+%% 2. CONFIG RESOLUTION
+%% ---------------------------------------------------------------------
+subgraph CONFIG["2 · CADENCE RESOLUTION — user sliders to scheduler fields"]
+    direction TB
+
+    C1["<b>OnTwosProfile</b> defaults<br/>OnTwosProfile.cs:56 StepRate = 12<br/>OnTwosProfile.cs:66 CadenceJitter = 0<br/>OnTwosProfile.cs:72 AnimTau = 5 deg"]
+    C2["MaxHoldSeconds = 1 / max 0.01, StepRate<br/>AnimationStepper.cs:667-671"]
+    C3["MinHoldSeconds = MaxHoldSeconds x 1 - clamp01 jitter<br/>AnimationStepper.cs:673-677"]
+    C4["<b>Locked</b> predicate<br/>HoldFrameScheduler.cs:123-124<br/>NOT IsPositiveInfinity Max<br/>AND Min >= Max"]
+    C5["jitter = 0  ->  Min == Max == 1/12 s<br/><b>LOCKED — metronome</b><br/>every bone snaps on the same beat"]
+    C6["jitter > 0  ->  Min &lt; Max<br/><b>ADAPTIVE</b> — tau may snap a bone<br/>early, so limbs desynchronise"]
+
+    CWARN["<b>'Default' is ambiguous — mind this.</b><br/>CLASS defaults are Min = 0, Max = +Infinity<br/>HoldFrameScheduler.cs:49 and :56<br/>Max = +Inf FAILS the Locked predicate, and<br/>forceSnap can never fire, so a bare scheduler<br/>is purely tau-driven.<br/>PROFILE defaults resolve to locked.<br/>TECHNICAL.md 4.6"]
+
+    C1 --> C2 --> C3 --> C4
+    C4 --> C5
+    C4 --> C6
+    C4 -.-> CWARN
+end
+
+%% ---------------------------------------------------------------------
+%% 3. THE ALGORITHM
+%% ---------------------------------------------------------------------
+subgraph UPDATE["3 · HoldFrameScheduler.Update — THE ALGORITHM · HoldFrameScheduler.cs:168-366"]
+    direction TB
+
+    U00(["<b>ENTER</b> Update t, boneRotation<br/>one instance per bone,<br/>fully independent state  :168"])
+    U01["DidSnap = false  :173<br/>cleared up front so every early<br/>return below reports 'no snap'"]
+    U02[/"<b>_sampler.Add t, boneRotation</b>  :175<br/>ring buffer write, marks _dirty<br/>SEE SECTION 4"/]
+
+    U03{"_windowStart &lt; 0 ?<br/>first call, or first after Reset<br/>:178"}
+    U04["<b>SEED</b>  :180-186<br/>_windowStart = time<br/>_held = boneRotation<br/>_lastSnapTime = time<br/>return _held<br/><br/>hold clock starts HERE so the seed<br/>frame is not charged to MinHold.<br/>Every bone is seeded in the same<br/>Start/Reset pass — that is what puts<br/>the whole rig in phase."]
+
+    U05{"_sampler.Ready ?<br/>Count >= MinSamples = 4<br/>:190"}
+    U06["<b>WARM-UP</b>  :192-193<br/>_held = boneRotation, return.<br/>Tracking continuously — the<br/>opposite of a hold, so DidSnap<br/>stays false."]
+
+    U07["tStart = _windowStart<br/>tEnd = time  :196-197"]
+    U08{"tEnd - tStart &lt; 1e-4 ?<br/>:199"}
+    U09["degenerate interval — return _held<br/>unchanged  :200"]
+
+    U10{"<b>Locked ?</b>  :223<br/>i.e. CadenceJitter == 0"}
+
+    subgraph LOCKEDPATH["3a · LOCKED FAST PATH — :223-235"]
+        direction TB
+        L1["lockedHeldFor = time - _lastSnapTime  :225"]
+        L2{"lockedHeldFor >= MaxHoldSeconds ?<br/>:226"}
+        L3["<b>_held = boneRotation</b>  :228<br/>VERBATIM COPY — this is the only<br/>assignment in the whole scheduler that<br/>is bit-identical to its input.<br/>DidSnap = true  :229<br/>AdvanceSnapGrid  :230"]
+        L4["hold — no write  :231"]
+        L5["_windowStart = _sampler.OldestTime  :233<br/><b>return _held</b>  :234"]
+        L6["<b>Why this path exists.</b> forceSnap is tested<br/>before the tau branch, so when Min == Max the<br/>candidate walk is UNREACHABLE. Without this<br/>guard the spline refit, the 80-point LUT and<br/>the extrema scan were computed and thrown<br/>away, every bone, every tick.<br/><b>40.4 us -> 1.5 us</b> per 13-bone rig per tick.<br/>:202-222"]
+        L1 --> L2
+        L2 -- yes --> L3 --> L5
+        L2 -- no --> L4 --> L5
+        L5 -.-> L6
+    end
+
+    U11[/"<b>newestEvaluated = _sampler.Evaluate tEnd</b>  :254<br/><b>THIS CALL IS LORE.</b> It is the only thing that<br/>refits the spline and rebuilds the arc-length LUT<br/>before candidates are read. ArcLengthCandidates<br/>interpolates the LUT directly and never refits, so<br/>without this the candidates were placed against a<br/>LUT up to one extrema interval old — measured<br/>displacement reached 22.4 deg, wider than a<br/>typical tau. The value is reused at :337."/]
+
+    U12{"_framesSinceExtremaScan<br/>>= ExtremaInterval = 10 ?<br/>:257"}
+    U13[/"<b>ExtremaDetector.FindForBone</b>  :259<br/>refresh _cachedExtrema<br/>SEE SECTION 6"/]
+    U14["_framesSinceExtremaScan++  :262<br/><br/>THROTTLE COST: a turning point is on<br/>average 5 and at worst 10 frames old<br/>before it can be a candidate.<br/>TECHNICAL.md 11"]
+
+    U15["<b>BUILD SEGMENT BOUNDARIES</b>  :269-278<br/>_boundaries.Clear<br/>Add tStart<br/>for each cached extremum e:<br/>&nbsp;&nbsp;if tStart &lt; e &lt; tEnd -> Add e<br/>if last &lt; tEnd -> Add tEnd<br/><br/>the window filter is load-bearing: an<br/>extremum predating tStart would produce<br/>unsorted out-of-range boundaries and<br/>corrupt candidate placement"]
+
+    U16["<b>ARC-LENGTH CANDIDATES PER SEGMENT</b>  :281-291<br/>_candidates.Clear<br/>for seg in 0 .. count-2:<br/>&nbsp;&nbsp;a = _boundaries[seg], b = _boundaries[seg+1]<br/>&nbsp;&nbsp;if b - a &lt; 1e-5 -> skip degenerate<br/>&nbsp;&nbsp;ArcLengthCandidates a, b, n, _segCandidates<br/>&nbsp;&nbsp;append the written count<br/>SEE SECTION 4"]
+
+    U17["<b>INTERIOR BOUNDARIES ARE CANDIDATES TOO</b>  :305<br/>for i in 1 .. count-2: _candidates.Add _boundaries[i]<br/><br/>arc-length placement is STRICTLY INTERIOR —<br/>the i+1 / n+1 parameterisation never reaches<br/>either end — so without this the walk could snap<br/>just before a turning point or just after it, but<br/>never ON it. The extremes are exactly where an<br/>animator spends a drawing.<br/><br/>index 0 is tStart and the last is tEnd. Neither is<br/>added: tEnd is already reachable via forceSnap,<br/>tStart is an artefact of where the buffer begins."]
+
+    U18["_candidates.Sort  :307"]
+    U19["<b>DEDUPLICATE IN PLACE</b>  :313-323<br/>keep = 0<br/>for read in 0 .. count-1:<br/>&nbsp;&nbsp;if keep &gt; 0 and c[read] - c[keep-1] &lt; 0.016 -> skip<br/>&nbsp;&nbsp;c[keep++] = c[read]<br/>RemoveRange keep, count - keep<br/><br/>0.016 s is ~1 frame at 60 Hz, matching<br/>ExtremaDetector.MinSegment. Compaction writes<br/>over the existing backing array and RemoveRange<br/>only moves elements, so this allocates NOTHING."]
+
+    U20["<b>CADENCE GATE</b>  :326-328<br/>heldFor   = time - _lastSnapTime<br/>allowSnap = heldFor >= MinHoldSeconds<br/>forceSnap = Max is finite AND heldFor >= Max"]
+
+    U21{"<b>forceSnap ?</b>  :334<br/>TESTED FIRST — deliberately"}
+
+    U22["<b>FORCED SNAP</b>  :337-339<br/>_held = newestEvaluated<br/>DidSnap = true<br/>AdvanceSnapGrid time, heldFor<br/><br/>NOTE this is the CURVE at its newest knot,<br/>NOT a copy of the input. It equals boneRotation<br/>as a ROTATION — 0.000000 deg — but matches it<br/>bitwise only 73 pct of the time, and 26 pct on<br/>hemisphere-inconsistent input, where it is an<br/>exact negation about half the time.<br/>Bit-identity belongs to the LOCKED path only."]
+
+    U23{"else allowSnap ?<br/>:341"}
+
+    U24["<b>THE TAU WALK</b>  :344-359<br/>for each candidate t in order:<br/>&nbsp;&nbsp;if t &gt; time -> break<br/>&nbsp;&nbsp;evaluated = _sampler.Evaluate t<br/>&nbsp;&nbsp;if Quaternion.Angle _held, evaluated &gt; Tau:<br/>&nbsp;&nbsp;&nbsp;&nbsp;_held = evaluated<br/>&nbsp;&nbsp;&nbsp;&nbsp;DidSnap = true<br/>&nbsp;&nbsp;&nbsp;&nbsp;_lastSnapTime = t   &lt;- the CANDIDATE's time,<br/>&nbsp;&nbsp;&nbsp;&nbsp;not 'time': the snap conceptually happened<br/>&nbsp;&nbsp;&nbsp;&nbsp;at t, so the next MinHold window is measured<br/>&nbsp;&nbsp;&nbsp;&nbsp;from the real event."]
+
+    U25["<b>CHAINS DELIBERATELY.</b> The walk does not stop<br/>at the first crossing — it keeps going and keeps<br/>the LAST qualifying candidate, so the held pose<br/>reflects the newest step position rather than<br/>lagging behind it.<br/><br/>KNOWN COST: an extremum the walk lands on is<br/>overwritten whenever a later candidate also<br/>qualifies. That is why making extrema eligible<br/>helped some configurations and not others.<br/>An aesthetic trade, not a defect. TECHNICAL.md 11"]
+
+    U26["hold — MinHoldSeconds not yet elapsed,<br/>return _held untouched  :360"]
+
+    U27["_windowStart = _sampler.OldestTime  :364<br/>advance the window; drop the oldest portion"]
+    U28(["<b>return _held</b>  :366"])
+
+    U00 --> U01 --> U02 --> U03
+    U03 -- yes --> U04
+    U03 -- no --> U05
+    U05 -- no --> U06
+    U05 -- yes --> U07 --> U08
+    U08 -- yes --> U09
+    U08 -- no --> U10
+    U10 -- "yes · CadenceJitter = 0" --> L1
+    U10 -- "no · CadenceJitter > 0" --> U11
+    U11 --> U12
+    U12 -- yes --> U13 --> U14
+    U12 -- no --> U14
+    U14 --> U15 --> U16 --> U17 --> U18 --> U19 --> U20 --> U21
+    U21 -- yes --> U22 --> U27
+    U21 -- no --> U23
+    U23 -- yes --> U24 --> U27
+    U23 -- no --> U26 --> U27
+    U27 --> U28
+    U24 -.-> U25
+end
+
+%% ---------------------------------------------------------------------
+%% 3b. THE SNAP GRID
+%% ---------------------------------------------------------------------
+subgraph GRID["3b · AdvanceSnapGrid — why the beat does not drift · :138-146"]
+    direction TB
+    G1{"MaxHoldSeconds &gt; 1e-6 ?<br/>:140"}
+    G2["_lastSnapTime += floor heldFor / Max x Max  :142<br/><br/>advances by WHOLE step intervals instead of<br/>assigning 'time'. Assigning time would push the<br/>beat forward by the frame overshoot on every<br/>single step, and the cadence would slew."]
+    G3{"time - _lastSnapTime<br/>>= Max ?  :143"}
+    G4["_lastSnapTime = time  :143<br/>catch-up guard: a breakpoint or a load<br/>hitch must not produce a huge burst of<br/>back-dated snaps"]
+    G5["_lastSnapTime = time  :145<br/>degenerate interval"]
+    G6["<b>Shared by the locked and adaptive paths<br/>deliberately.</b> If the two advanced the grid<br/>differently, a baked clip would stop matching<br/>what Play mode previewed.  :135-137"]
+    G1 -- yes --> G2 --> G3
+    G3 -- yes --> G4
+    G1 -- no --> G5
+    G2 -.-> G6
+end
+
+%% ---------------------------------------------------------------------
+%% 4. THE SAMPLER
+%% ---------------------------------------------------------------------
+subgraph SAMPLER["4 · MonotoneCubicSampler — rolling window + arc-length LUT · MonotoneCubicSampler.cs"]
+    direction TB
+
+    S1["<b>Add time, rotation</b>  :89-98<br/>_times[_head] = time<br/>_rots[_head] = rotation<br/>_head = _head + 1 mod capacity<br/>Count++ until capacity<br/><b>_dirty = true</b>  :97<br/>circular buffer, capacity 30 default<br/>= half a second at 60 Hz"]
+
+    S2{"<b>RebuildIfDirty</b>  :197<br/>_dirty ?"}
+    S3["return — cached fit reused  :199"]
+
+    S4["<b>UNROLL + DEDUPE, FUSED</b>  :204-217<br/>start = Count &lt; capacity ? 0 : _head<br/>for i in 0 .. Count-1:<br/>&nbsp;&nbsp;idx = start + i mod capacity<br/>&nbsp;&nbsp;if m &gt; 0 and t &lt;= scratchTimes[m-1] -> skip<br/>&nbsp;&nbsp;copy into scratch, m++<br/><br/>dedup is FUSED into the copy, so no<br/>intermediate array exists at all"]
+
+    S5{"m &lt; 2 ?  :219"}
+    S6["_fitValid = false<br/>_lutValid = false<br/>_dirty = false, return  :219"]
+
+    S7[/"<b>QuaternionSignNorm.Normalise scratch, m</b>  :221<br/>SEE SECTION 5b"/]
+
+    S8["split into 4 component channels<br/>_qx _qy _qz _qw  :223-228"]
+
+    S9[/"<b>_px.Fit · _py.Fit · _pz.Fit · _pw.Fit</b>  :230-233<br/>four independent scalar PCHIP curves<br/>SEE SECTION 5"/]
+
+    S10["_fitValid = true  :235"]
+
+    S11["<b>BuildArcLengthLut</b>  :246-266<br/>tMin = _px.TMin, tMax = _px.TMax<br/>dt = tMax - tMin / LutSize - 1<br/><b>LutSize = 80</b>  :52<br/><br/>_lutTimes[0] = tMin<br/>_lutCumAngles[0] = 0<br/>for i in 1 .. 79:<br/>&nbsp;&nbsp;t = tMin + i x dt<br/>&nbsp;&nbsp;curr = EvaluatePchip t<br/>&nbsp;&nbsp;_lutCumAngles[i] = _lutCumAngles[i-1]<br/>&nbsp;&nbsp;&nbsp;&nbsp;+ Quaternion.Angle prev, curr<br/><br/>cumulative angular distance from window<br/>start. MONOTONE NON-DECREASING by<br/>construction — that is what makes the<br/>table invertible."]
+
+    S12["_lutValid = true  :265<br/>_dirty = false  :239"]
+
+    S13["<b>Evaluate t</b>  :121-134<br/>Count == 0 -> identity<br/>Count &lt; 4 -> LatestRaw<br/><b>RebuildIfDirty</b>  :126<br/>-> Quaternion px.Eval, py.Eval,<br/>&nbsp;&nbsp;&nbsp;pz.Eval, pw.Eval <b>.normalized</b><br/><br/>the .normalized is required: per-component<br/>interpolation does not preserve unit length.<br/>It is also why Evaluate is not bit-identical<br/>to its input."]
+
+    S14["<b>Derivative t</b>  :140-152<br/>Count &lt; 4 -> Vector4.zero<br/><b>RebuildIfDirty</b>  :144<br/>-> Vector4 of the four component derivatives"]
+
+    S15["<b>ArcLengthCandidates a, b, n, dest</b>  :166-192<br/><b>GUARD :169 — if NOT _lutValid -> return 0.</b><br/>It reads the LUT arrays directly and<br/><b>NEVER triggers a rebuild.</b> That is what<br/>keeps it allocation-free, and it is why the<br/>caller must refit first — see :254."]
+
+    S16["angA = LutLerp times->angles, a<br/>angB = LutLerp times->angles, b<br/>total = angB - angA  :173-176"]
+
+    S17{"total &lt; 1e-5 ?<br/>:177"}
+
+    S18["<b>DEGENERATE — equal-time fallback</b>  :180-181<br/>dest[i] = a + b - a x i+1 / n+1<br/>the curve is flat here, so arc length<br/>carries no information"]
+
+    S19["<b>EQUAL-ANGLE PLACEMENT</b>  :185-190<br/>for i in 0 .. n-1:<br/>&nbsp;&nbsp;target = angA + total x i+1 / n+1<br/>&nbsp;&nbsp;dest[i] = LutLerp angles->times, target<br/><br/>invert the table by swapping the roles of<br/>the two arrays — legal because cumulative<br/>angle is monotone.<br/><br/><b>i+1 / n+1 is STRICTLY INTERIOR:</b> for<br/>i in 0..n-1 it spans 1/n+1 .. n/n+1, never<br/>0 and never 1. The endpoints a and b are<br/>therefore NEVER emitted — which is exactly<br/>why :305 adds the boundaries separately."]
+
+    S20["<b>LutLerp xs, ys, x</b>  :277-292<br/>clamp at both ends<br/>binary search for the bracketing pair<br/>linear interpolate<br/><b>O log 80</b> — no curve evaluation at<br/>query time, which is the whole point<br/>of precomputing the table"]
+
+    S21["<b>Clear</b>  :105-115<br/>Count = 0, _head = 0, _dirty = true<br/>_fitValid = false, _lutValid = false<br/>the Pchip objects SURVIVE — they are<br/>storage; the flags are what gate reads"]
+
+    S1 --> S2
+    S2 -- no --> S3
+    S2 -- yes --> S4 --> S5
+    S5 -- yes --> S6
+    S5 -- no --> S7 --> S8 --> S9 --> S10 --> S11 --> S12
+    S13 --> S2
+    S14 --> S2
+    S15 --> S16 --> S17
+    S17 -- yes --> S18
+    S17 -- no --> S19
+    S19 --> S20
+    S16 --> S20
+end
+
+%% ---------------------------------------------------------------------
+%% 5. PCHIP
+%% ---------------------------------------------------------------------
+subgraph PCHIPSEC["5 · Pchip — Fritsch-Carlson 1980 monotone cubic Hermite · Pchip.cs"]
+    direction TB
+
+    P0["<b>Why PCHIP and not a natural cubic spline.</b><br/>Pchip.cs:9-13<br/>· no overshoot between data points<br/>· no Runge phenomenon<br/>· C1 continuous — value and 1st derivative<br/>· extrema sit AT KNOTS; between knots the<br/>&nbsp;&nbsp;cubic is monotone<br/><br/>An overshooting spline would invent motion<br/>the source never had, and the extrema<br/>detector would then chase phantom<br/>turning points."]
+
+    P1["<b>Fit x, y, count</b>  :64-84<br/>validate x STRICTLY increasing :73-75<br/>Array.Copy into owned storage :79-80<br/>_n = count<br/>-> ComputeTangents<br/><br/>reuses existing arrays; the live steppers<br/>refit four of these per bone per frame, so<br/>allocating here would dominate GC cost"]
+
+    P2["<b>Secant slopes</b>  :182-183<br/>d[i] = y[i+1] - y[i] / x[i+1] - x[i]"]
+
+    P3{"n == 2 ?<br/>:187"}
+    P4["m[0] = m[1] = d[0]  :190<br/>a single segment is just its secant"]
+
+    P5["<b>STAGE 1 — interior tangents</b>  :196-211<br/>for i in 1 .. n-2:<br/><br/>if d[i-1] x d[i] &lt;= 0:<br/>&nbsp;&nbsp;<b>m[i] = 0</b> — the secants disagree in<br/>&nbsp;&nbsp;sign, so an EXTREMUM sits on this knot<br/>else:<br/>&nbsp;&nbsp;h0 = x[i] - x[i-1], h1 = x[i+1] - x[i]<br/>&nbsp;&nbsp;w0 = 2 h1 + h0, w1 = h1 + 2 h0<br/>&nbsp;&nbsp;<b>m[i] = w0 + w1 / w0/d[i-1] + w1/d[i]</b><br/>&nbsp;&nbsp;weighted HARMONIC mean of adjacent<br/>&nbsp;&nbsp;secants — provably monotone-preserving"]
+
+    P6["<b>STAGE 1 — endpoints</b>  :214-215<br/>m[0]   = EndpointTangent d0,d1,h0,h1<br/>m[n-1] = EndpointTangent d n-2, d n-3, ...<br/>one-sided three-point estimate<br/>de Boor, A Practical Guide to Splines"]
+
+    P7["<b>EndpointTangent d0, d1, h0, h1</b>  :250-262<br/>m = 2 h0 + h1 x d0 - h0 x d1 / h0 + h1<br/><br/>CLAMP 1 :255 — if m x d0 &lt;= 0 return 0<br/>&nbsp;&nbsp;opposite sign to the nearer secant means<br/>&nbsp;&nbsp;an extremum sits on the endpoint<br/>CLAMP 2 :258 — if d0 x d1 &lt;= 0 and<br/>&nbsp;&nbsp;abs m &gt; abs 3 d0 return 3 d0"]
+
+    P8["<b>STAGE 2 — Fritsch-Carlson clamp</b>  :220-241<br/>the sufficient condition for monotonicity<br/>for i in 0 .. n-2:<br/><br/>if d[i] == 0:  :222<br/>&nbsp;&nbsp;m[i] = m[i+1] = 0 — a FLAT segment;<br/>&nbsp;&nbsp;any nonzero tangent would overshoot<br/>&nbsp;&nbsp;the constant value<br/>else:<br/>&nbsp;&nbsp;alpha = m[i] / d[i]<br/>&nbsp;&nbsp;beta  = m[i+1] / d[i]<br/>&nbsp;&nbsp;r = alpha^2 + beta^2<br/>&nbsp;&nbsp;<b>if r &gt; 9:</b>  :235<br/>&nbsp;&nbsp;&nbsp;&nbsp;tau = 3 / sqrt r<br/>&nbsp;&nbsp;&nbsp;&nbsp;m[i]   = tau x alpha x d[i]<br/>&nbsp;&nbsp;&nbsp;&nbsp;m[i+1] = tau x beta  x d[i]<br/><br/>r &gt; 9 is the circle of radius 3 in<br/>alpha-beta space — outside it, monotonicity<br/>is not guaranteed, so scale back onto it"]
+
+    P9["<b>Evaluate t</b>  :105-127<br/>t &lt;= x[0]   -> y[0]      constant extrapolation<br/>t &gt;= x[n-1] -> y[n-1]<br/>i = FindSegment t  binary search :156-167<br/>h = x[i+1] - x[i],  s = t - x[i] / h<br/><br/><b>cubic Hermite basis</b>  :118-121<br/>h00 = 2 s^3 - 3 s^2 + 1<br/>h10 = s^3 - 2 s^2 + s<br/>h01 = -2 s^3 + 3 s^2<br/>h11 = s^3 - s^2<br/><br/><b>p = h00 y[i] + h10 h m[i]<br/>&nbsp;&nbsp;&nbsp;&nbsp;+ h01 y[i+1] + h11 h m[i+1]</b>  :123-126"]
+
+    P10["<b>Derivative t</b>  :133-153<br/>outside the range -> 0  flat extrapolation<br/><br/>dh00 = 6 s^2 - 6 s / h<br/>dh10 = 3 s^2 - 4 s + 1<br/>dh01 = -6 s^2 + 6 s / h<br/>dh11 = 3 s^2 - 2 s<br/><br/>p' = dh00 y[i] + dh10 m[i]<br/>&nbsp;&nbsp;&nbsp;&nbsp;+ dh01 y[i+1] + dh11 m[i+1]<br/><br/>zero-crossings of THIS are the extrema<br/>that ExtremaDetector hunts"]
+
+    P0 --> P1 --> P2 --> P3
+    P3 -- yes --> P4
+    P3 -- no --> P5 --> P6 --> P8
+    P6 -.-> P7
+    P8 --> P9
+    P8 --> P10
+end
+
+%% ---------------------------------------------------------------------
+%% 5b. HEMISPHERE NORMALISATION
+%% ---------------------------------------------------------------------
+subgraph SIGN["5b · QuaternionSignNorm — the double-cover trap · QuaternionSignNorm.cs"]
+    direction TB
+    Q1["<b>The problem</b>  :9-13<br/>q and -q encode the SAME rotation but sit on<br/>opposite hemispheres of the 4-sphere.<br/>Per-component interpolation between<br/>hemisphere-inconsistent samples takes the<br/>LONG PATH — a roughly 360 deg detour —<br/>and PCHIP reproduces it faithfully,<br/>producing a visible spin spike."]
+    Q2["<b>Normalise q, count</b>  :41-51<br/>for i in 1 .. count-1:<br/>&nbsp;&nbsp;if Quaternion.Dot q[i-1], q[i] &lt; 0:<br/>&nbsp;&nbsp;&nbsp;&nbsp;q[i] = -q[i].x, -y, -z, -w<br/><br/>first sample is the canonical reference;<br/>each later one is negated if it would<br/>otherwise take the long way round"]
+    Q3["<b>Consequence for bit-identity</b>  :18-21<br/>this may NEGATE the newest sample before<br/>fitting. Evaluate at the newest knot then<br/>returns -q: same rotation, different bits.<br/>Measured: an exact negation about 47 pct of<br/>the time on inconsistent input."]
+    Q1 --> Q2 --> Q3
+end
+
+%% ---------------------------------------------------------------------
+%% 6. EXTREMA DETECTION
+%% ---------------------------------------------------------------------
+subgraph EXTREMA["6 · ExtremaDetector — Brent 1973 root finding · ExtremaDetector.cs"]
+    direction TB
+
+    E1["<b>FindForBone sampler, tStart, tEnd, results, dt = 0.016</b>  :48<br/>results.Clear; bail if tEnd &lt;= tStart<br/>scratch list is <b>ThreadStatic</b> :38 — a public<br/>static utility with a shared mutable buffer<br/>would corrupt silently under a worker thread"]
+
+    E2["<b>SCAN — one fused pass over all four components</b>  :63-82<br/>prev = sampler.Derivative tStart<br/>for t = tStart + dt; t &lt;= tEnd + 1e-6; t += dt:<br/>&nbsp;&nbsp;t = min t, tEnd<br/>&nbsp;&nbsp;curr = sampler.Derivative t<br/>&nbsp;&nbsp;for c in 0 .. 3:<br/>&nbsp;&nbsp;&nbsp;&nbsp;<b>if prev[c] x curr[c] &lt; 0</b> -> sign change<br/>&nbsp;&nbsp;&nbsp;&nbsp;brackets a zero crossing on component c<br/>&nbsp;&nbsp;&nbsp;&nbsp;-> all.Add Brent sampler, c, tPrev, t<br/><br/>all four components in ONE pass: Derivative<br/>evaluates all four regardless, so scanning them<br/>separately discarded three quarters of every<br/>result. A bone extremum occurs when ANY<br/>component's derivative hits zero."]
+
+    E3["<b>Brent sampler, component, a, b</b>  :112-180<br/>BrentTol = 1e-4 :26 · BrentMaxIter = 50 :27<br/><br/>fa, fb = derivative at the bracket ends<br/>if fa x fb &gt; 0 -> midpoint fallback :117-118<br/>ensure abs fa &gt;= abs fb, else swap :120-124<br/><br/>loop until abs b - a &lt; tol or 50 iterations:<br/>&nbsp;&nbsp;if fa != fc and fb != fc:<br/>&nbsp;&nbsp;&nbsp;&nbsp;<b>inverse quadratic interpolation</b> :138-140<br/>&nbsp;&nbsp;else:<br/>&nbsp;&nbsp;&nbsp;&nbsp;<b>secant method</b> :145<br/>&nbsp;&nbsp;five acceptance conditions :148-154<br/>&nbsp;&nbsp;if any fails -> <b>bisection fallback</b> :158<br/>&nbsp;&nbsp;re-bracket on the sign of fa x fs :169-170<br/><br/>guaranteed convergence, superlinear near<br/>the root — bisection's safety with the<br/>speed of interpolation"]
+
+    E4{"all.Count == 0 ?<br/>:84"}
+    E5["return — no extrema this window"]
+    E6["all.Sort  :86"]
+
+    E7["<b>MERGE ACROSS COMPONENTS</b>  :91-96<br/>MinSegment = 0.016  :31  ~1 frame at 60 Hz<br/>for each e in sorted order:<br/>&nbsp;&nbsp;if results empty OR<br/>&nbsp;&nbsp;&nbsp;&nbsp;e - last &gt;= MinSegment -> keep<br/><br/>two components crossing zero a fraction of a<br/>millisecond apart describe the SAME turning<br/>point. Below one frame they are numerically<br/>indistinguishable anyway.<br/><br/>this tolerance is what :313-323 in the<br/>scheduler mirrors when it dedupes candidates."]
+
+    E1 --> E2 --> E4
+    E2 -.-> E3
+    E4 -- yes --> E5
+    E4 -- no --> E6 --> E7
+end
+
+%% ---------------------------------------------------------------------
+%% 7. PROXY DECOUPLING
+%% ---------------------------------------------------------------------
+subgraph PROXY["7 · RagdollProxyBuilder — why physics needs a clone · RagdollProxyBuilder.cs"]
+    direction TB
+
+    X0["<b>THE CATEGORY ERROR THIS AVOIDS</b>  :9-15<br/>Writing localRotation onto a non-kinematic<br/>Rigidbody under a CharacterJoint makes the<br/>joint think the bone drifted from its<br/>constraint target. The solver pushes back, and<br/>that corrective impulse ACCUMULATES every<br/>FixedUpdate. Bodies that should fall under<br/>gravity accelerate sideways.<br/><br/>Sequential-impulse solvers already run a FIXED<br/>iteration count and converge slowly on deep<br/>ragdoll tree topology. Injecting an externally<br/>authored pose is not adding noise to a stable<br/>process — it is forcing a process already<br/>fighting to stay converged."]
+
+    X1["<b>Build source, stripComponents, ...</b>  :38<br/>clone = Instantiate source at same pos/rot,<br/><b>parent = null</b>  :46-47"]
+
+    X2["<b>Why scene root, not a child</b>  :31-36<br/>if the proxy were parented to the source,<br/>anything that disables or destroys the source<br/>— pooling, hit reactions, dismemberment —<br/>would take the proxy with it. Scene root<br/>means the proxy outlives the source."]
+
+    X3["clone.SetActive false  :49<br/>BEFORE any component can Awake"]
+
+    X4["<b>DestroyImmediate every IOnTwosComponent</b>  :57<br/>Instantiate copies OUR components too, so<br/>without this the clone would try to build its<br/>own proxy — infinite recursion, mitigated only<br/>by Destroy's end-of-frame timing.<br/>DestroyImmediate on an INACTIVE object is safe<br/>and has no frame-ordering side effects."]
+
+    X5["<b>StripToRenderersOnly</b>  :121-142<br/>DestroyImmediate, in this order:<br/>Joint -> Rigidbody -> Collider<br/>-> MonoBehaviour -> Animator<br/><br/>joints before bodies so Unity resolves the<br/>CharacterJoint to Rigidbody dependency itself"]
+
+    X6["clone.SetActive true  :62<br/>force-enable renderers  :64-78<br/>SkinnedMeshRenderer.updateWhenOffscreen = true<br/>— stripped scripts may have run OnDisable and<br/>left renderers off"]
+
+    X7["<b>PATH-BASED BONE PAIRING</b>  :83-106<br/>sourceBodies = GetComponentsInChildren Rigidbody<br/>BonePathCache over the clone  :84<br/>for each source body:<br/>&nbsp;&nbsp;proxyBone = paths.Find sourceRoot, rb.transform<br/>&nbsp;&nbsp;pair them, or warn and skip<br/><br/>matched by HIERARCHY PATH, not by index —<br/>index pairing breaks the moment a limb is<br/>destroyed and the arrays are rebuilt"]
+
+    X8["<b>RESULT</b><br/>SourceBodies — physics, untouched, still solving<br/>VisualBones  — render-only, no physics at all<br/><br/>RagdollStepper reads the first and writes the<br/>second. The stylisation NEVER enters the<br/>solver's state, which is the architectural<br/>claim of the whole project."]
+
+    X0 --> X1 --> X3 --> X4 --> X5 --> X6 --> X7 --> X8
+    X1 -.-> X2
+end
+
+%% ---------------------------------------------------------------------
+%% 8. WHAT IT COSTS
+%% ---------------------------------------------------------------------
+subgraph PERF["8 · MEASURED — 13-bone rig, 50 Hz, Tests/ harness"]
+    direction TB
+    M1["<b>LOCKED · CadenceJitter = 0</b><br/>1.7 us per rig per tick<br/>0 B allocated over 3600 ticks<br/>output byte-identical across all 20<br/>StepRate x framerate configurations"]
+    M2["<b>ADAPTIVE · CadenceJitter &gt; 0</b><br/>325 us per rig per tick — about 180x<br/>0 B allocated over 3600 ticks<br/>peak deviation from source 13-28 deg<br/>depending on configuration"]
+    M3["<b>THE HONEST NOTE</b><br/>TECHNICAL.md 4.6 and 11<br/>At CadenceJitter = 0 — the default profile, the<br/>recommended setting and the classic look — the<br/>entire spline pipeline is UNREACHABLE. Sections<br/>4, 5 and 6 of this diagram contribute NOTHING<br/>in the configuration most users will run.<br/>The system is then equivalent to 'resample<br/>every 1/StepRate seconds'.<br/><br/>Whether adaptive placement actually looks<br/>better than a metronome is UNMEASURED.<br/>RESEARCH.md 6"]
+    M1 --- M2 --- M3
+end
+
+%% ---------------------------------------------------------------------
+%% CROSS-SECTION CALL EDGES
+%% ---------------------------------------------------------------------
+DA -.->|"per rendered frame"| U00
+DB -.->|"per 50 Hz physics tick"| U00
+DC -.->|"per clip frame"| U00
+R15 -.->|calls| U00
+C4 -.->|"sets Min/Max"| U10
+
+U02 -.->|calls| S1
+U11 -.->|"forces the refit"| S13
+U13 -.->|calls| E1
+U16 -.->|calls| S15
+U24 -.->|calls| S13
+U22 -.->|"value from"| S13
+
+S7 -.->|calls| Q2
+S9 -.->|calls| P1
+S11 -.->|"80 evals via"| P9
+S13 -.->|calls| P9
+S14 -.->|calls| P10
+E2 -.->|calls| S14
+
+L3 -.->|"AdvanceSnapGrid"| G1
+U22 -.->|"AdvanceSnapGrid"| G1
+
+X8 -.->|"VisualBones written by"| R18
+U28 -.->|"held pose out"| R15
+
+%% ---------------------------------------------------------------------
+%% STYLING
+%% ---------------------------------------------------------------------
+classDef hot fill:#7f1d1d,stroke:#fca5a5,stroke-width:3px,color:#fff
+classDef fix fill:#14532d,stroke:#86efac,stroke-width:3px,color:#fff
+classDef warn fill:#78350f,stroke:#fcd34d,stroke-width:2px,color:#fff
+classDef math fill:#1e3a5f,stroke:#93c5fd,stroke-width:2px,color:#fff
+classDef exit fill:#3b0764,stroke:#d8b4fe,stroke-width:2px,color:#fff
+
+class U10,U21,U23,C4 hot
+class U11,U17,U19 fix
+class CWARN,U22,U25,M3,X0,Q3,U14 warn
+class P5,P8,P9,P10,S11,S19,E3 math
+class U04,U06,U09,U28,L5,R2 exit
