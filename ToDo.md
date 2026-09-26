@@ -7,6 +7,17 @@ as pending long after both shipped, which cost real time to rediscover.
 
 ## Open
 
+- **Re-run the §2a placement sweep.** `Tests/ExtremaAlignmentTests.cs` produced the
+  numbers `RESEARCH.md` §2a rests on, and it ran against the pre-fix cadence defect
+  above (reachable only above zero jitter, which is the regime it measures). The
+  matched-budget design most likely absorbs it, but the figures should not be quoted
+  until they have been produced on fixed behaviour.
+
+- **Re-tag `ALGORITHM.mmd` line references.** The 2026-09-26 fixes shifted
+  `HoldFrameScheduler.cs` by +8 lines from `Update()` and +17 from the newest-knot
+  evaluation, and rewrote the τ walk. Every other file's tags are still accurate. The
+  diagram carries a banner saying so; the numbers themselves are unfixed.
+
 - **Runtime per-bone position stepping in `AnimationStepper`.**
   `LiveAnimation.PositionTau` is bake-time only; the runtime animation path steps
   rotation only. Character-level position holding already works via
@@ -50,6 +61,62 @@ as pending long after both shipped, which cost real time to rediscover.
   adaptive path, already ~180× the cost of the locked one.
 
 ## Done
+
+- **Six defects from the 2026-09-26 audit.** Found by reading, then pinned by tests that
+  failed before the fix and pass after it. In severity order:
+
+  1. **The hold clock could run backwards.** The τ walk stamped `_lastSnapTime` with the
+     winning candidate's own time, and candidates span the whole sample window — so a
+     qualifying candidate from the far end moved the clock up to ~0.5 s into the past.
+     The next tick measured an inflated `heldFor`, tripped `forceSnap`, and emitted a
+     step inside the `MinHoldSeconds` guard that exists to prevent exactly that.
+     `AdvanceSnapGrid` repaired the grid on the same tick, so the cadence recovered, but
+     the spurious step had already been drawn. On a reversing motion the same mechanism
+     could leave the proxy holding a pose from half a second earlier. The walk now skips
+     candidates at or before the last snap. Reachable only above zero jitter, which is
+     the regime `ExtremaAlignmentTests` measures — **the §2a sweep needs re-running.**
+
+  2. **Live bone-rule edits did nothing in Play mode.** `BoneRuleSet.Sync` compared
+     `_tunings` by reference and overrides by `NameContains` only. Unity's inspector
+     mutates the existing element when you edit a field inside a list entry, so editing
+     a `TauOverride` or ticking `Exclude` left every reference identical and `Resolve()`
+     never ran. `DOCUMENTATION.md` §9 promised the opposite. Values are now snapshotted
+     and compared; the response curve is compared by reference and key count, which is
+     sufficient because the resolved array holds the curve instance and in-place key
+     edits are already live.
+
+  3. **The proxy build ran the game's `Awake`/`OnEnable` on the clone.** `Instantiate`
+     of an active source returns an active clone and Unity runs those callbacks before
+     returning, so a ragdoll activation silently re-ran manager registration, event
+     subscription, pooling hooks and one-shot VFX/audio. The clone is now built inside a
+     deactivated holder and activated only after stripping. A holder is used rather than
+     deactivating the source, which would have moved the side effect onto the live rig.
+
+  4. **`_windowStart < 0` as a "not seeded" sentinel.** Latent: all three drivers pass
+     non-negative timestamps, but a caller that did not would have re-seeded every tick
+     and never stepped, with no symptom beyond "it does nothing". Replaced with an
+     explicit `_seeded` flag — which is also what made fix 5 safe.
+
+  5. **`RagdollStepper` fed the scheduler a raw absolute clock.** `Time.fixedTime` is
+     never rebased, unlike `AnimationStepper`'s `Time.time - _startTime`. Float precision
+     degrades with magnitude, and past roughly eighteen hours of runtime the ULP
+     approaches the arc-length LUT's own step, so its timestamps start repeating and
+     candidate placement quietly coarsens. Now rebased on `Start`.
+
+  6. **The extrema scan could fail to terminate.** `for (float t = tStart + dt; ...; t += dt)`
+     stops advancing once `dt` falls below the ULP at `tStart` — a hang rather than a
+     glitch, reachable after about five days of continuous runtime. Now index-driven, so
+     the iteration count is bounded by construction and the sampling is more accurate too.
+
+  7. **Stale extrema across a locked→adaptive transition.** `_framesSinceExtremaScan` only
+     advanced on the adaptive path, so raising `CadenceJitter` in Play mode could place
+     candidates against a cache from before the locked run. The locked path now arms the
+     counter before returning. Cannot affect locked output, which never reads the cache.
+
+- **PlayMode test assembly.** `Tests/PlayMode/` covers what EditMode structurally cannot:
+  proxy build and lifetime, the settle→sleep→wake lifecycle, prune on dismemberment, bone
+  exclusion, and `AnySource` stepping. Rigs are built procedurally from primitives, so
+  nothing depends on an imported asset. Prerequisites in `Tests/README.md`.
 
 - **Ragdoll settle/wake lifecycle.** Settling now puts every tracked body to
   `Sleep()` and returns from `FixedUpdate` immediately, so a resting corpse costs

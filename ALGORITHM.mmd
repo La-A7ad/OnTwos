@@ -15,6 +15,19 @@ flowchart TD
 %% branch poster-fixes-2026-09-04. Line numbers move when the code moves;
 %% the file:line tags are the contract, not decoration.
 %%
+%% STALE AS OF 2026-09-26. The defect fixes of that date shifted
+%% HoldFrameScheduler.cs by +8 lines from Update() onward and by +17 from the
+%% newest-knot evaluation onward, and rewrote the tau walk. ExtremaDetector's
+%% scan loop is now index-driven rather than accumulating. Every OTHER file's
+%% tags are still correct. The structure the diagram describes is unchanged
+%% except for two things, both in section 3:
+%%   * the tau walk now SKIPS candidates at or before _lastSnapTime, so the
+%%     hold clock cannot run backwards and no pose older than the last snap
+%%     can be held (see U24);
+%%   * the locked fast path now arms _framesSinceExtremaScan before returning,
+%%     so raising CadenceJitter at runtime starts from a fresh extrema scan.
+%% Re-tagging the line numbers is an outstanding task — see ToDo.md.
+%%
 %% Reading order: 1 drivers, 2 config, 3 the scheduler (the algorithm
 %% proper), then 4-6 for the maths it calls into, then 7 for the physics
 %% decoupling that makes the ragdoll case possible at all.

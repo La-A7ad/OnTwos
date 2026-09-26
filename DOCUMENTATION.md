@@ -786,6 +786,17 @@ the proxy keeps only Transforms and Renderers. This happens automatically when
 `ActivateRagdoll()` is called — source renderers are hidden and the proxy
 becomes the visible stand-in.
 
+**The proxy build does not run your scripts.** The clone is created inside a
+deactivated holder, stripped, and only then activated, so `Awake`, `OnEnable` and
+`OnDisable` never fire on the copies of your own components. Before 2026-09-26 they
+did — `Instantiate` of an active source returns an active clone and Unity runs those
+callbacks before returning — which meant activating a ragdoll silently re-ran whatever
+your scripts do on startup: manager registration, event subscription, pooling hooks,
+one-shot VFX and audio. If you previously worked around that, the workaround can go.
+
+Note that `StripProxyComponents = false` is different: you have asked to keep the
+components, so they will `Awake` once when the proxy is activated.
+
 **Hierarchy changes after Start are not tracked.** Both steppers cache their
 bone/body lists at startup. Adding or removing transforms at runtime requires
 destroying and re-adding the component.

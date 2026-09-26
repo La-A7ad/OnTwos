@@ -156,6 +156,11 @@ running something rather than by reading code.
 
 ## Known traps
 
+- **Fixed on 2026-09-26, listed so old notes elsewhere read correctly:** the adaptive
+  hold clock could run backwards; live `BoneTunings` / `BoneOverrides` edits did nothing
+  in Play mode; the proxy build ran the game's `Awake`/`OnEnable` on the clone. All three
+  now have regression tests. See `ToDo.md` → Done.
+
 - **A one-body "ragdoll" fails silently.** A rig with a single Rigidbody on the root and
   no colliders logs `1 tracked bones` as ordinary info and then free-falls forever. This
   cost an hour of debugging on 2026-08-04 before the logger's velocity trace made it
