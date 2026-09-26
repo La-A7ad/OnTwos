@@ -236,7 +236,14 @@ namespace OnTwos.Runtime
             PruneDestroyedBodies();
             if (_sourceBodies.Length == 0) return;
 
-            float t = Time.fixedTime;
+            // Rebased on Start, matching what AnimationStepper already does with Time.time.
+            // Raw Time.fixedTime is an absolute clock, and float precision degrades with
+            // its magnitude: past roughly eighteen hours of continuous runtime the ULP
+            // approaches the arc-length LUT's own step, so the table's timestamps start
+            // repeating and candidate placement quietly coarsens. Nothing downstream reads
+            // an absolute time — the scheduler is seeded from whatever it is first given
+            // and everything after that is a difference — so the offset is free.
+            float t = Time.fixedTime - _startTime;
             float liveTau = ResolveTau();
             float posTau  = ResolvePositionTau();
             int liveCandidates = ResolveCandidates();

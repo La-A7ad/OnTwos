@@ -63,9 +63,17 @@ namespace OnTwos.Runtime.Math
             Vector4 prev = sampler.Derivative(tStart);
             float tPrev = tStart;
 
-            for (float t = tStart + dt; t <= tEnd + 1e-6f; t += dt)
+            // Indexed rather than accumulated (`t += dt`). Accumulating had two problems:
+            // it compounds rounding across the scan, and at a large enough tStart the
+            // increment falls below the float ULP, at which point t stops advancing and
+            // the loop never terminates — a hang rather than a glitch. Deriving t from the
+            // step index bounds the iteration count by construction and is also the more
+            // accurate of the two.
+            int steps = Mathf.Max(1, Mathf.CeilToInt((tEnd - tStart) / dt));
+
+            for (int k = 1; k <= steps; k++)
             {
-                t = System.Math.Min(t, tEnd);
+                float t = Mathf.Min(tStart + k * dt, tEnd);
                 Vector4 curr = sampler.Derivative(t);
 
                 // A sign change on any component brackets a zero crossing on that
