@@ -43,21 +43,47 @@ namespace OnTwos.Runtime.Utilities
             BuildResult result = default;
             if (source == null) return result;
 
-            GameObject clone = Object.Instantiate(source,
-                source.transform.position, source.transform.rotation, null);
-            clone.name = source.name + proxyNameSuffix;
-            clone.SetActive(false);
+            // Instantiate into a DEACTIVATED holder rather than straight into the scene.
+            //
+            // Instantiate of an active source returns an active clone, and Unity runs
+            // Awake and OnEnable on every copied component synchronously before this
+            // method gets control back. The clone carries copies of the GAME's scripts,
+            // so that meant a ragdoll activation silently re-ran whatever those scripts
+            // do on startup: manager registration, event subscription, pooling hooks,
+            // one-shot VFX and audio. The subsequent SetActive(false) then ran OnDisable
+            // on top. The stripping below could only ever clean up afterwards — by then
+            // the callbacks had already fired.
+            //
+            // A GameObject parented to an inactive one is not active in the hierarchy, so
+            // nothing on the clone runs until it is deliberately activated at the end,
+            // with the scripts already gone.
+            //
+            // The holder is used in preference to deactivating the SOURCE around the
+            // Instantiate call, which would work but would fire OnDisable/OnEnable on the
+            // live rig — trading a side effect on the clone for one on the original.
+            var holder = new GameObject("~OnTwosProxyHolder");
+            holder.SetActive(false);
 
-            // Kill all CrunchyRagdoll-authored components on the clone BEFORE
-            // it goes active. Instantiate copies all components including ours,
-            // so without this the clone would also try to build a proxy → infinite
-            // recursion (mitigated only by Destroy()'s end-of-frame timing, but a
-            // few-frame cascade is still possible). DestroyImmediate on an inactive
-            // object is safe and has no frame-ordering side effects.
+            GameObject clone = Object.Instantiate(source, holder.transform, true);
+            clone.name = source.name + proxyNameSuffix;
+
+            // Kill all OnTwos-authored components on the clone. Instantiate copies all
+            // components including ours, so without this the clone would also try to
+            // build a proxy → infinite recursion. DestroyImmediate on an object that is
+            // inactive in the hierarchy is safe and has no frame-ordering side effects.
             DestroyImmediateAllOfType<MonoBehaviour>(clone, m => m is IOnTwosComponent);
 
             if (stripComponents)
                 StripToRenderersOnly(clone);
+
+            // Detach to the scene root before the holder goes away. SetActive(false) on the
+            // clone's own flag first, so that reparenting out of the inactive holder does
+            // not activate it a moment early and run anything that survived the strip.
+            clone.SetActive(false);
+            clone.transform.SetParent(null, true);
+            clone.transform.SetPositionAndRotation(source.transform.position,
+                                                   source.transform.rotation);
+            Object.DestroyImmediate(holder);
 
             clone.SetActive(true);
 
