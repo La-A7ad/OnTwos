@@ -715,6 +715,14 @@ physics moves but the proxy does not.
 
 An honest assessment, separating what's genuinely distinctive from what isn't.
 
+> **[STALE 2026-09-26 — see `RESEARCH.md` §1 and §2a.]** Items 1, 2, 3 and 6 below were
+> written before adaptive placement was measured. Arc-length candidate placement (item 3)
+> does not land poses closer to a motion's extrema than a uniform metronome at a matched
+> pose budget, and at `CadenceJitter = 0` the whole adaptive path is unreachable (§4.6).
+> Item 4, proxy decoupling, is the one that survives and should lead. This section needs
+> rewriting to match; it is left intact rather than silently edited so the change is
+> visible.
+
 **What is not novel.** The core mechanism — walk a curve, emit a new key when
 deviation from the last exceeds a threshold — is decades old. It is the
 Douglas–Peucker lineage applied to animation curves, it is what keyframe-reduction
