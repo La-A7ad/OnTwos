@@ -81,6 +81,13 @@ namespace OnTwos.Runtime.Math
         /// </summary>
         public bool DidSnap { get; private set; }
 
+        // Whether Update has seeded the window yet. Replaces an earlier `_windowStart < 0`
+        // sentinel, which silently assumed the caller's timebase never goes negative. All
+        // three shipping drivers pass non-negative timestamps, but a caller that did not
+        // would have re-seeded every tick and never stepped at all — a failure with no
+        // symptom other than "it does nothing".
+        private bool _seeded;
+
         // Timestamp of the last snap, in the caller's timebase. Stored as an absolute
         // time rather than an accumulated delta so repeated addition can't drift over
         // a long session. Negative means "no snap yet" (seeded on the first Update).
@@ -157,7 +164,8 @@ namespace OnTwos.Runtime.Math
             Tau = tau;
             CandidatesPerSegment = candidatesPerSegment;
             _held = Quaternion.identity;
-            _windowStart = -1f;
+            _seeded = false;
+            _windowStart = 0f;
             _lastSnapTime = 0f;
         }
 
@@ -175,8 +183,9 @@ namespace OnTwos.Runtime.Math
             _sampler.Add(time, boneRotation);
 
             // First sample after construction or Reset — seed the window and held pose.
-            if (_windowStart < 0f)
+            if (!_seeded)
             {
+                _seeded = true;
                 _windowStart = time;
                 _held = boneRotation;
                 // Start the hold clock here so the seed frame isn't counted against
@@ -229,6 +238,14 @@ namespace OnTwos.Runtime.Math
                     DidSnap = true;
                     AdvanceSnapGrid(time, lockedHeldFor);
                 }
+
+                // The extrema cache is not read on this path, so it is not maintained here
+                // either — but CadenceJitter can be raised in Play mode, and the first
+                // adaptive tick would then place candidates against whatever the cache held
+                // before the locked run began. Arming the counter costs one assignment and
+                // guarantees the transition starts from a fresh scan. It cannot affect
+                // locked output, which never reads _cachedExtrema at all.
+                _framesSinceExtremaScan = ExtremaInterval;
 
                 _windowStart = _sampler.OldestTime;
                 return _held;
@@ -341,11 +358,30 @@ namespace OnTwos.Runtime.Math
             else if (allowSnap)
             {
                 // Walk candidates through deviation threshold, chaining snaps across
-                // the full window so the held pose reflects the latest step position.
+                // the window so the held pose reflects the latest step position.
+                //
+                // The window reaches back as far as the oldest sample in the ring buffer —
+                // roughly half a second — but the candidates inside it that PRECEDE the last
+                // snap are already spent: the held pose was updated at _lastSnapTime, and
+                // re-snapping to a moment before that means showing a pose the rig has
+                // already moved on from. Skipping them fixes two things at once:
+                //
+                //   * the hold clock could run BACKWARDS. _lastSnapTime is stamped with the
+                //     winning candidate's own time, so a qualifying candidate from the far
+                //     end of the buffer moved it up to a full window into the past. The next
+                //     tick then measured an inflated heldFor, tripped forceSnap, and emitted
+                //     a step inside the MinHoldSeconds guard that exists to prevent exactly
+                //     that. AdvanceSnapGrid repaired the grid on the same tick, so the
+                //     cadence recovered — but the spurious step had already been drawn.
+                //
+                //   * on a reversing motion the newest poses sit within Tau of the running
+                //     _held, so the LAST qualifying candidate could be an old one and the
+                //     proxy would display a pose from up to half a second ago.
                 for (int i = 0; i < _candidates.Count; i++)
                 {
                     float t = _candidates[i];
                     if (t > time) break;
+                    if (t <= _lastSnapTime) continue;
                     Quaternion evaluated = _sampler.Evaluate(t);
                     if (Quaternion.Angle(_held, evaluated) > Tau)
                     {
@@ -378,7 +414,8 @@ namespace OnTwos.Runtime.Math
         {
             _sampler.Clear();           // clear sample history — old frames cannot bleed in
             _held        = initialPose;
-            _windowStart = -1f;
+            _seeded      = false;
+            _windowStart = 0f;
             // _lastSnapTime is re-seeded from the incoming timestamp on the next
             // Update() (the _windowStart < 0 branch), because Reset has no timebase
             // of its own. Resetting every scheduler together therefore re-phases the
