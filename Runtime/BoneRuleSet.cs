@@ -47,6 +47,24 @@ namespace OnTwos.Runtime.Utilities
         private string[] _rawKeywords;
         private string[] _rawOverrideNames;
 
+        // Value snapshots of the rule data, so an in-place inspector edit is detected.
+        //
+        // Reference comparison alone is not enough and used to be all there was. Unity's
+        // inspector mutates the EXISTING element when a field inside a list entry is
+        // edited — only adding or removing an entry replaces the array — so editing a
+        // TauOverride or ticking an Exclude box left every reference identical and
+        // Resolve() never ran. DOCUMENTATION.md section 9 promises these re-resolve as
+        // soon as they are edited, and until now only a renamed keyword or a resized list
+        // actually did.
+        private bool[]  _rawOverrideExclude;
+        private float[] _rawOverrideTau;
+
+        private Transform[]      _rawTuningBones;
+        private bool[]           _rawTuningExclude;
+        private float[]          _rawTuningTau;
+        private AnimationCurve[] _rawTuningCurves;
+        private int[]            _rawTuningCurveLengths;
+
         /// <summary>
         /// Number of bones currently resolved. Zero until the first Sync.
         /// </summary>
@@ -69,7 +87,7 @@ namespace OnTwos.Runtime.Utilities
 
             bool rulesChanged = bonesChanged
                                 || !ReferenceEquals(_excludeBones, excludeBones)
-                                || !ReferenceEquals(_tunings, tunings)
+                                || TuningsChanged(tunings)
                                 || KeywordsChanged(keywords)
                                 || OverridesChanged(overrides);
 
@@ -83,6 +101,7 @@ namespace OnTwos.Runtime.Utilities
 
             if (bonesChanged) CacheBoneNames(bones);
             CacheLoweredRules(keywords, overrides);
+            CacheTuningValues(tunings);
             Resolve();
             return true;
         }
@@ -109,10 +128,52 @@ namespace OnTwos.Runtime.Utilities
             if (overrides == null) return false;
             if (_rawOverrideNames == null || _rawOverrideNames.Length != overrides.Length) return true;
 
+            if (_rawOverrideExclude == null || _rawOverrideExclude.Length != overrides.Length) return true;
+
             for (int i = 0; i < overrides.Length; i++)
             {
-                string name = overrides[i]?.NameContains;
-                if (!ReferenceEquals(_rawOverrideNames[i], name)) return true;
+                OnTwosProfile.BoneOverride o = overrides[i];
+
+                if (!ReferenceEquals(_rawOverrideNames[i], o?.NameContains)) return true;
+
+                // Values, not just the name. Toggling ForceExclude or nudging a per-bone
+                // tau leaves NameContains identical, and comparing only the name meant
+                // neither took effect until the list was resized.
+                if (_rawOverrideExclude[i] != (o != null && o.ForceExclude)) return true;
+                if (_rawOverrideTau[i]     != (o?.TauOverride ?? 0f)) return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// True when the tuning list, or any value inside it, differs from the snapshot.
+        ///
+        /// The response curve is compared by reference and key count rather than by
+        /// contents. That is deliberate and sufficient: <see cref="ResponseCurve"/> stores
+        /// the curve INSTANCE, so editing its keys in place is already reflected the next
+        /// time it is evaluated and needs no re-resolve. What does need one is swapping in
+        /// a different curve, or a curve crossing between empty and non-empty — an
+        /// unauthored curve evaluates to zero for every input and must read as "not set"
+        /// rather than as a curve that drives tau to nothing.
+        /// </summary>
+        private bool TuningsChanged(BoneTuning[] tunings)
+        {
+            if (!ReferenceEquals(_tunings, tunings)) return true;
+            if (tunings == null) return false;
+            if (_rawTuningBones == null || _rawTuningBones.Length != tunings.Length) return true;
+
+            for (int i = 0; i < tunings.Length; i++)
+            {
+                BoneTuning t = tunings[i];
+
+                if (!ReferenceEquals(_rawTuningBones[i], t?.Bone)) return true;
+                if (_rawTuningExclude[i] != (t != null && t.Exclude)) return true;
+                if (_rawTuningTau[i]     != (t?.TauOverride ?? 0f)) return true;
+
+                AnimationCurve curve = t?.ResponseCurveOverride;
+                if (!ReferenceEquals(_rawTuningCurves[i], curve)) return true;
+                if (_rawTuningCurveLengths[i] != (curve?.length ?? 0)) return true;
             }
 
             return false;
@@ -155,12 +216,45 @@ namespace OnTwos.Runtime.Utilities
             {
                 _loweredOverrideNames = new string[on];
                 _rawOverrideNames     = new string[on];
+                _rawOverrideExclude   = new bool[on];
+                _rawOverrideTau       = new float[on];
             }
             for (int i = 0; i < on; i++)
             {
-                string name = overrides[i]?.NameContains;
+                OnTwosProfile.BoneOverride o = overrides[i];
+                string name = o?.NameContains;
+
                 _rawOverrideNames[i]     = name;
+                _rawOverrideExclude[i]   = o != null && o.ForceExclude;
+                _rawOverrideTau[i]       = o?.TauOverride ?? 0f;
                 _loweredOverrideNames[i] = string.IsNullOrEmpty(name) ? null : name.ToLowerInvariant();
+            }
+        }
+
+        // Snapshot the tuning values that TuningsChanged compares against. Allocates only
+        // when the list is resized, which is an authoring action, never a per-frame one.
+        private void CacheTuningValues(BoneTuning[] tunings)
+        {
+            int n = tunings?.Length ?? 0;
+            if (_rawTuningBones == null || _rawTuningBones.Length != n)
+            {
+                _rawTuningBones        = new Transform[n];
+                _rawTuningExclude      = new bool[n];
+                _rawTuningTau          = new float[n];
+                _rawTuningCurves       = new AnimationCurve[n];
+                _rawTuningCurveLengths = new int[n];
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                BoneTuning t = tunings[i];
+                AnimationCurve curve = t?.ResponseCurveOverride;
+
+                _rawTuningBones[i]        = t?.Bone;
+                _rawTuningExclude[i]      = t != null && t.Exclude;
+                _rawTuningTau[i]          = t?.TauOverride ?? 0f;
+                _rawTuningCurves[i]       = curve;
+                _rawTuningCurveLengths[i] = curve?.length ?? 0;
             }
         }
 
