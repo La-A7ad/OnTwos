@@ -205,8 +205,13 @@ namespace OnTwos.Runtime
             _ragdollStepper              = GetComponent<RagdollStepper>() ?? gameObject.AddComponent<RagdollStepper>();
             _ragdollStepper.Profile      = Profile;
 
+            // RagdollLogger only exists where its own guard lets it compile, so the
+            // call has to carry the same condition. Without it a release Player build
+            // fails on a type the Editor can see and the player cannot.
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
             if (AddDiagnostics && GetComponent<RagdollLogger>() == null)
                 gameObject.AddComponent<RagdollLogger>();
+#endif
 
             return _ragdollStepper;
         }
