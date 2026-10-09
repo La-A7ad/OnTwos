@@ -278,7 +278,7 @@ namespace OnTwos.Tests.PlayMode
             yield return FixedSteps(10);
 
             Rigidbody[] bodies = rig.GetComponentsInChildren<Rigidbody>();
-            Object.Destroy(bodies[bodies.Length - 1].gameObject);
+            UnityEngine.Object.Destroy(bodies[bodies.Length - 1].gameObject);
 
             yield return FixedSteps(10);
 
